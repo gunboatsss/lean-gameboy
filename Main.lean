@@ -109,11 +109,55 @@ partial def runUntilCyclesIO (s0 : GBState) (cycles : Nat) (progressEvery : Nat)
         else loop st (k + 1)
   loop s0 0
 
+/-- Two-digit hex for debug dumps. -/
+def hex2 (v : UInt8) : String :=
+  let h : Nat → Char
+    | 0 => '0' | 1 => '1' | 2 => '2' | 3 => '3' | 4 => '4' | 5 => '5'
+    | 6 => '6' | 7 => '7' | 8 => '8' | 9 => '9' | 10 => 'a' | 11 => 'b'
+    | 12 => 'c' | 13 => 'd' | 14 => 'e' | _ => 'f'
+  String.ofList [h (v.toNat / 16), h (v.toNat % 16)]
+
 /-- Print a CPU/hardware snapshot for debugging soft-locks. -/
 def debugState (s : GBState) : IO Unit := do
   let r := s.regs
   IO.println s!"[dbg] AF={r.af.toNat} BC={r.bc.toNat} DE={r.de.toNat} HL={r.hl.toNat} SP={r.sp.toNat} PC={r.pc.toNat} IME={r.ime} halted={r.halted}"
   IO.println s!"[dbg] IE={s.ie.toNat} IF={s.if_.toNat} LY={s.ppu.ly.toNat} LCDC={s.ppu.lcdc.toNat} STAT={s.ppu.stat.toNat} DIV={s.timer.div.toNat} TIMA={s.timer.tima.toNat} TAC={s.timer.tac.toNat}"
+  let p := s.ppu
+  IO.println s!"[ppu] scx={p.scx.toNat} scy={p.scy.toNat} wx={p.wx.toNat} wy={p.wy.toNat} bgp={p.bgp.toNat} obp0={p.obp0.toNat} obp1={p.obp1.toNat} lyc={p.lyc.toNat} mode={p.mode}"
+  -- OAM entries with nonzero Y (potentially visible sprites)
+  for i in List.range 40 do
+    let y := (bget s.oam (i * 4)).toNat
+    if y != 0 then
+      IO.println s!"[oam {i}] y={y} x={(bget s.oam (i * 4 + 1)).toNat} tile={(bget s.oam (i * 4 + 2)).toNat} attr={(bget s.oam (i * 4 + 3)).toNat}"
+  -- WRAM + HRAM hex dump (diff across runs to see if input registers)
+  for base in List.range 512 do
+    let mut line := ""
+    for k in List.range 16 do
+      line := line ++ hex2 (bget s.wram (base * 16 + k))
+    IO.println s!"[wram {base}] {line}"
+  let mut hline := ""
+  for k in List.range 127 do
+    hline := hline ++ hex2 (bget s.hram k)
+  IO.println s!"[hram] {hline}"
+  let mapBase := if bitGet p.lcdc 3 then 0x1C00 else 0x1800
+  for row in List.range 18 do
+    let mut line := s!"[map {row}]"
+    for col in List.range 20 do
+      let v := bget s.vram (mapBase + row * 32 + col)
+      line := line ++ s!" {v.toNat}"
+    IO.println line
+  -- raw bytes of selected tiles (signed addressing per LCDC.4)
+  let signed := !bitGet p.lcdc 4
+  for tid in ([10, 11, 14, 25, 29, 34, 37, 88, 91, 113, 114, 116, 120, 121, 122, 171] : List Nat) do
+    -- replicate Ppu.tileAddr exactly (Int math for signed half)
+    let tbase : Nat :=
+      if signed then
+        (((0x1000 : Int) + ((tid : Int) - (if tid >= 128 then 256 else 0)) * 16).toNat) % 0x2000
+      else tid * 16
+    let mut line := s!"[tile {tid}]"
+    for k in List.range 16 do
+      line := line ++ s!" {(bget s.vram (tbase + k)).toNat}"
+    IO.println line
   let op := busRead s r.pc
   if op == 0xCB then
     IO.println s!"[dbg] @PC: CB {(busRead s (r.pc + 1)).toNat} → {repr (Instr.decodeCB (busRead s (r.pc + 1)))}"

@@ -158,15 +158,19 @@ structure Sprite where
   pal : Bool  -- false = OBP0, true = OBP1
 deriving Repr, Inhabited
 
+/-- Parse OAM entry `i` (0-39) into a `Sprite`. -/
+def parseSprite (oam : ByteArray) (i : Nat) : Sprite :=
+  let base := i * 4
+  let attr := bget oam (base + 3)
+  { y := (bget oam base).toNat, x := (bget oam (base + 1)).toNat,
+    tile := (bget oam (base + 2)).toNat,
+    -- OAM bit 7 set = BG/Window colors 1-3 over OBJ (sprite behind)
+    prio := bitGet attr 7, yFlip := bitGet attr 6,
+    xFlip := bitGet attr 5, pal := bitGet attr 4 }
+
 /-- Parse all 40 OAM entries. -/
 def parseOam (oam : ByteArray) : Array Sprite :=
-  Array.mk (List.range 40 |>.map (fun i =>
-    let base := i * 4
-    let attr := bget oam (base + 3)
-    { y := (bget oam base).toNat, x := (bget oam (base + 1)).toNat,
-      tile := (bget oam (base + 2)).toNat,
-      prio := !bitGet attr 7, yFlip := bitGet attr 6,
-      xFlip := bitGet attr 5, pal := bitGet attr 4 }))
+  Array.mk (List.range 40 |>.map (parseSprite oam))
 
 /-- Apply OBJ layer over a background line.
     Returns final shade indices (palettes already applied). -/

@@ -16,8 +16,8 @@ import LeanGameboy.Bus
 import LeanGameboy.Emu
 import LeanGameboy.Sdl.Ffi
 import LeanGameboy.Sdl.Driver
-import LeanGameboy.Proofs.Flags
 import LeanGameboy.Proofs.Arith
+import LeanGameboy.Proofs.Regs
 import LeanGameboy.Proofs.Decode
 import LeanGameboy.Proofs.Bus
 import LeanGameboy.Proofs.Timer
@@ -25,3 +25,4 @@ import LeanGameboy.Proofs.Ppu
 import LeanGameboy.Proofs.Apu
 import LeanGameboy.Proofs.Halt
 import LeanGameboy.Proofs.Reach
+import LeanGameboy.Proofs.Sprite

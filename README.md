@@ -30,6 +30,11 @@ bug re-armed), single fall-through arming, bugged-immediate shift,
 and `len - 1` advance — the exact mechanism `double-halt-cancel`
 validates empirically.
 
+**Sprite priority fix + proofs** (`Proofs/Sprite.lean`): OAM bit 7 was
+negated, burying every `attr = 0` sprite behind nonzero background
+(invisible Tetris menu cursors — the arrow/title sprite survived only
+over color-0). Attribute decoding is now pinned per-bit.
+
 **`double-halt-cancel` (nitro2k01): PASS** — correct double-`HALT`
 spin with IME=0, inhibited return address (`RST $38` pushes the
 un-incremented PC), VRAM-inaccessible code fetch reading `$FF`,
@@ -43,15 +48,16 @@ at build time, zero `sorry`/`axiom`): ALU flag contracts + identity
 all 512 opcodes (`Decode`), 12 memory-map non-interference lemmas
 (`Bus`), timer edge cases + IRQ acknowledgement (`Timer`), PPU modes,
 palette bounds, interrupt priority (`Ppu`), APU phase-step frame
-preservation (`Apu`). Bounded reachability: a 132k-instruction
+preservation (`Apu`), halt-bug spin/arming/immediates (`Halt`),
+sprite attribute decoding (`Sprite`). Bounded reachability: a 132k-instruction
 scripted run is proven to reach its target state via `native_decide`
 (`Reach` — kernel `decide` cannot scale there; full-game traces are
 provably out of reach, see that file). Open goals for later:
 per-instruction cycle lower bounds (60-arm automation) and channel
 phase-additivity (div/mod composition).
 
-Verified where it counts: kernel-checked `decide` proofs
-(`LeanGameboy/Proofs/Flags.lean`) plus a headless end-to-end suite
+Verified where it counts: the kernel-checked proof suite above
+plus a headless end-to-end suite
 (`gb-test`: ALU/`DAA` results, JR loop, frame advance, VBlank IRQ,
 cycle counts, timer edge/overflow behavior).
 
@@ -99,7 +105,8 @@ Battery saves load/store automatically as `<rom>.sav`.
 - `LeanGameboy/Bus.lean` — memory map, CPU executor, IRQ dispatch
 - `LeanGameboy/Emu.lean` — frame stepping, PPM dumps, `.sav`
 - `LeanGameboy/Sdl/{Ffi,Driver}.lean` + `c/shim.c` — SDL frontend
-- `LeanGameboy/Proofs/Flags.lean` — machine-checked spot proofs
+- `LeanGameboy/Proofs/{Arith,Regs,Decode,Bus,Timer,Ppu,Apu,Halt,Sprite,Reach}.lean`
+  — machine-checked proof suite (see below)
 - `Tests/Smoke.lean` (`gb-test`) — end-to-end smoke suite
 - `Main.lean` — CLI
 

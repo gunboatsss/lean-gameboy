@@ -71,16 +71,6 @@ def setAF (r : Regs) (v : UInt16) : Regs :=
     z := bitGet f 7, n := bitGet f 6, hf := bitGet f 5, cf := bitGet f 4,
     ime := r.ime, eiDelay := r.eiDelay, halted := r.halted }
 
-/-- Spot check: AF packing of the DMG boot defaults is 0x01B0. -/
-example : Regs.bootDefaults.af = 0x01B0 := by decide
-
-/-- Spot check: unpacking 0x01B0 restores A and the Z/H/C flags. -/
-example : ((Regs.bootDefaults.setAF 0x01B0).a = 0x01) &&
-    (Regs.bootDefaults.setAF 0x01B0).z &&
-    !(Regs.bootDefaults.setAF 0x01B0).n &&
-    (Regs.bootDefaults.setAF 0x01B0).hf &&
-    (Regs.bootDefaults.setAF 0x01B0).cf := by decide
-
 end Regs
 
 end GB
