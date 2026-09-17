@@ -1,0 +1,27 @@
+-- This module serves as the root of the `LeanGameboy` library.
+-- Import modules here that should be built as part of the library.
+import LeanGameboy.Basic
+import LeanGameboy.Cpu.Regs
+import LeanGameboy.Cpu.Decode
+import LeanGameboy.Cartridge.Header
+import LeanGameboy.Cartridge.Mbc
+import LeanGameboy.Timer
+import LeanGameboy.Interrupts
+import LeanGameboy.Joypad
+import LeanGameboy.Serial
+import LeanGameboy.Ppu
+import LeanGameboy.Framebuffer
+import LeanGameboy.Apu
+import LeanGameboy.Bus
+import LeanGameboy.Emu
+import LeanGameboy.Sdl.Ffi
+import LeanGameboy.Sdl.Driver
+import LeanGameboy.Proofs.Flags
+import LeanGameboy.Proofs.Arith
+import LeanGameboy.Proofs.Decode
+import LeanGameboy.Proofs.Bus
+import LeanGameboy.Proofs.Timer
+import LeanGameboy.Proofs.Ppu
+import LeanGameboy.Proofs.Apu
+import LeanGameboy.Proofs.Halt
+import LeanGameboy.Proofs.Reach

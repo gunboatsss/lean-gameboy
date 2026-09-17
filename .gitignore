@@ -1,0 +1,6 @@
+/.lake
+# Game Boy ROMs (copyrighted / user-supplied, never commit)
+*.gb
+*.gbc
+# Battery-save sidecars produced next to ROMs at runtime
+*.sav
