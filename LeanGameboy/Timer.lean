@@ -35,14 +35,13 @@ def andLevel (internal : Nat) (tac : UInt8) : Bool :=
   let bit := (internal >>> freqBit tac) % 2 == 1
   bit && (tac.toNat / 4) % 2 == 1
 
-/-- Advance the timer by `mCycles` M-cycles in O(1).
+/-- Advance the timer by `dots` T-cycles in O(1).
     TIMA counts falling edges of the selected divider bit; edges in a
     batch are counted exactly with integer division, and overflow
     reloads TMA with an interrupt request. -/
-def step (t : TimerState) (mCycles : Nat) : TimerState :=
-  if mCycles == 0 then t
+def stepDots (t : TimerState) (dots : Nat) : TimerState :=
+  if dots == 0 then t
   else
-    let dots := mCycles * 4
     let internal := (t.divInternal + dots) % 65536
     let enabled := (t.tac.toNat / 4) % 2 == 1
     if !enabled then
@@ -63,6 +62,12 @@ def step (t : TimerState) (mCycles : Nat) : TimerState :=
         tima := tima'
         prevAnd := andLevel internal t.tac
         irq := irq' }
+
+/-- Advance the timer by `mCycles` M-cycles at single speed
+    (1 M-cycle = 4 T-cycles). Double-speed callers use `stepDots`
+    with 2 T-cycles per M-cycle instead. -/
+def step (t : TimerState) (mCycles : Nat) : TimerState :=
+  t.stepDots (mCycles * 4)
 
 /-- Write to DIV: resets the internal counter (may clock TIMA). -/
 def writeDiv (t : TimerState) : TimerState :=

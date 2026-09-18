@@ -33,6 +33,15 @@ def fbBlitLine (fb : Array UInt32) (ly : Nat) (line : Array Nat) : Array UInt32 
       loop (x + 1) (fbSet acc x ly (dmgShade shade))
   loop 0 fb
 
+/-- Blit one CGB scanline of final ARGB colors. -/
+def fbBlitColors (fb : Array UInt32) (ly : Nat) (line : Array UInt32) : Array UInt32 :=
+  let rec loop (x : Nat) (acc : Array UInt32) : Array UInt32 :=
+    if x >= fbWidth then acc
+    else
+      let c := if x < line.size then line[x]! else 0xFFFFFFFF
+      loop (x + 1) (fbSet acc x ly c)
+  loop 0 fb
+
 /-- Dump the framebuffer as a binary P6 PPM (`headless --dump` path). -/
 def fbToPPM (fb : Array UInt32) : ByteArray :=
   let header : Array UInt8 :=

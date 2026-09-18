@@ -106,6 +106,7 @@ static int g_quit = 0;
 #define SC_DOWN 81
 #define SC_UP 82
 #define SC_RSHIFT 229
+#define SC_F1 58
 
 /* ---------------- Lean entry points ---------------- */
 
@@ -123,8 +124,9 @@ lean_obj_res gb_open(uint32_t scale, lean_obj_arg _w) {
     if (!g_win) return lean_io_result_mk_ok(lean_box_uint32(3));
     g_ren = p_CreateRenderer(g_win, -1, 0);
     if (!g_ren) return lean_io_result_mk_ok(lean_box_uint32(4));
-    /* SDL_PIXELFORMAT_ARGB8888 = 0x16462004, SDL_TEXTUREACCESS_STREAMING = 1 */
-    g_tex = p_CreateTexture(g_ren, 0x16462004, 1, FB_W, FB_H);
+    /* SDL_PIXELFORMAT_ARGB8888 = 0x16362004, SDL_TEXTUREACCESS_STREAMING = 1.
+       (0x16462004 is RGBA8888 — using it swaps R/B on screen.) */
+    g_tex = p_CreateTexture(g_ren, 0x16362004, 1, FB_W, FB_H);
     if (!g_tex) return lean_io_result_mk_ok(lean_box_uint32(5));
     /* audio: 44100 Hz, AUDIO_S16SYS (0x8010), mono */
     struct {
@@ -190,7 +192,7 @@ lean_obj_res gb_present(lean_obj_arg w) {
 }
 
 /* poll : IO UInt32 — low 8 bits = buttons (R L U D A B Sel Sta),
- * bit 8 = quit requested. */
+ * bit 8 = quit requested, bit 9 = F1 (dump snapshot) requested. */
 lean_obj_res gb_poll(lean_obj_arg w) {
     uint32_t out = 0;
     if (!sdl_ok) return lean_io_result_mk_ok(lean_box_uint32(out));
@@ -210,6 +212,7 @@ lean_obj_res gb_poll(lean_obj_arg w) {
         if (st[SC_Z]) out |= 0x20;
         if (st[SC_RSHIFT] || st[SC_BACKSPACE]) out |= 0x40;
         if (st[SC_ENTER]) out |= 0x80;
+        if (nkeys > SC_F1 && st[SC_F1]) out |= 0x200;
     }
     if (g_quit) out |= 0x100;
     return lean_io_result_mk_ok(lean_box_uint32(out));

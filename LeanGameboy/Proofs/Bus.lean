@@ -109,4 +109,48 @@ theorem oamDma_vram (s : GBState) (src : Nat) :
   unfold oamDma
   rfl
 
+set_option maxRecDepth 10000
+
+/-- HDMA copies never touch the cycle counter. -/
+theorem hdmaCopyStep_cycles (src dst : Nat) (st : GBState) (i : Nat) :
+    (hdmaCopyStep src dst st i).cycles = st.cycles := rfl
+
+theorem hdmaFold_cycles (l : List Nat) (src dst : Nat) (st : GBState) :
+    (l.foldl (hdmaCopyStep src dst) st).cycles = st.cycles := by
+  induction l generalizing st with
+  | nil => rfl
+  | cons _ _ ih => simp only [List.foldl_cons, ih, hdmaCopyStep_cycles]
+
+theorem hdmaBlock_cycles (s : GBState) (src dst : Nat) :
+    (hdmaBlock s src dst).cycles = s.cycles := by
+  simp [hdmaBlock, hdmaFold_cycles]
+
+theorem hdmaHblank_cycles (s : GBState) :
+    (hdmaHblank s).cycles = s.cycles := by
+  unfold hdmaHblank
+  dsimp only
+  split
+  · rfl
+  · simp [hdmaBlock_cycles]
+
+/-- Scanline completion (HDMA + blit) preserves the cycle counter. -/
+theorem finishLine_cycles (s : GBState) (ppu : PpuState) :
+    (finishLine s ppu).cycles = s.cycles := by
+  unfold finishLine
+  dsimp only
+  split
+  · split <;> simp_all [hdmaHblank_cycles]
+  · rfl
+
+/-- Cycle accounting is exact: stepping adds precisely `m` M-cycles.
+    (The key composition lemma for any future fuel-sufficiency or
+    timing proof; `exec`'s per-arm lower bound remains open.) -/
+theorem advance_adds (s : GBState) (m : Nat) :
+    (advance s m).cycles = s.cycles + m := by
+  unfold advance
+  dsimp only
+  split
+  all_goals split
+  all_goals simp_all [finishLine_cycles]
+
 end GB

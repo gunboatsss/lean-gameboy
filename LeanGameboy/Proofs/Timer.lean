@@ -17,7 +17,7 @@ theorem timer_disabled_tima (t : TimerState) (m : Nat)
     (h : (t.tac.toNat / 4) % 2 == 0) :
     (t.step m).tima = t.tima := by
   have h' : (t.tac.toNat / 4) % 2 = 0 := by simpa using h
-  unfold TimerState.step
+  unfold TimerState.step TimerState.stepDots
   split
   · rfl
   · simp [h']
@@ -27,7 +27,7 @@ theorem timer_disabled_irq (t : TimerState) (m : Nat)
     (h : (t.tac.toNat / 4) % 2 == 0) (hirq : t.irq = false) :
     (t.step m).irq = false := by
   have h' : (t.tac.toNat / 4) % 2 = 0 := by simpa using h
-  unfold TimerState.step
+  unfold TimerState.step TimerState.stepDots
   split
   · simp [hirq]
   · simp [h', hirq]

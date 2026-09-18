@@ -1,6 +1,7 @@
 -- This module serves as the root of the `LeanGameboy` library.
 -- Import modules here that should be built as part of the library.
 import LeanGameboy.Basic
+import LeanGameboy.Cgb
 import LeanGameboy.Cpu.Regs
 import LeanGameboy.Cpu.Decode
 import LeanGameboy.Cartridge.Header

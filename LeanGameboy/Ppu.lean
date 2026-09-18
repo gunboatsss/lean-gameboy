@@ -8,6 +8,7 @@
   `renderLine`.
 -/
 import LeanGameboy.Basic
+import LeanGameboy.Cgb
 
 namespace GB
 
@@ -156,6 +157,8 @@ structure Sprite where
   yFlip : Bool
   xFlip : Bool
   pal : Bool  -- false = OBP0, true = OBP1
+  cgbPal : Nat := 0  -- CGB OBJ palette 0..7 (attr bits 0-2)
+  vbank : Nat := 0   -- CGB tile VRAM bank (attr bit 3)
 deriving Repr, Inhabited
 
 /-- Parse OAM entry `i` (0-39) into a `Sprite`. -/
@@ -166,7 +169,8 @@ def parseSprite (oam : ByteArray) (i : Nat) : Sprite :=
     tile := (bget oam (base + 2)).toNat,
     -- OAM bit 7 set = BG/Window colors 1-3 over OBJ (sprite behind)
     prio := bitGet attr 7, yFlip := bitGet attr 6,
-    xFlip := bitGet attr 5, pal := bitGet attr 4 }
+    xFlip := bitGet attr 5, pal := bitGet attr 4,
+    cgbPal := attr.toNat % 8, vbank := (attr.toNat / 8) % 2 }
 
 /-- Parse all 40 OAM entries. -/
 def parseOam (oam : ByteArray) : Array Sprite :=
@@ -230,6 +234,126 @@ def renderLine (p : PpuState) (vram oam : ByteArray) : Array Nat :=
                 if s.prio && bgc != 0 then line else line.set! x c
             loop (x + 1) line
         loop 0 bg
+
+-- ------------------------------------------------------------------
+-- CGB color renderer. Tile maps live in VRAM bank 0, per-tile
+-- attributes (palette, bank, flips, priority) at the same offsets in
+-- bank 1. Colors come from palette RAM (`bgPal`/`obPal`: 8×4 BGR555).
+-- ------------------------------------------------------------------
+
+/-- CGB background map attribute (VRAM bank 1). -/
+structure CgbBgAttr where
+  pal : Nat
+  bank : Nat
+  xFlip : Bool
+  yFlip : Bool
+  prio : Bool
+deriving DecidableEq, Repr
+
+/-- Decode a CGB map attribute byte. -/
+def parseBgAttr (v : UInt8) : CgbBgAttr :=
+  { pal := v.toNat % 8, bank := (v.toNat / 8) % 2,
+    xFlip := bitGet v 5, yFlip := bitGet v 6, prio := bitGet v 7 }
+
+/-- Look up a BGR555 palette color. -/
+def palColor (pal : Array UInt16) (i : Nat) : UInt16 :=
+  if h : i < pal.size then pal[i]'h else 0x7FFF
+
+/-- Render background+window scanline → per-pixel (ARGB, color idx, prio). -/
+def renderBgCgb (p : PpuState) (vram : ByteArray) (bgPal : Array UInt16) :
+    Array (UInt32 × Nat × Bool) :=
+  let winOn := bitGet p.lcdc 5 && p.wy.toNat <= p.ly.toNat
+  let signed := !bitGet p.lcdc 4
+  let bgMap := if bitGet p.lcdc 3 then 0x1C00 else 0x1800
+  let winMap := if bitGet p.lcdc 6 then 0x1C00 else 0x1800
+  -- LCDC.0 clear disables BG+window layer entirely (white behind sprites)
+  if !bitGet p.lcdc 0 then
+    Array.mk (List.replicate 160 (0xFFFFFFFF, 0, false))
+  else
+    let pix (x : Nat) : UInt32 × Nat × Bool :=
+      let (mapBase, px, py) :=
+        if winOn && x + 7 >= p.wx.toNat then
+          (winMap, x + 7 - p.wx.toNat, p.ly.toNat - p.wy.toNat)
+        else
+          (bgMap, (x + p.scx.toNat) % 256, (p.ly.toNat + p.scy.toNat) % 256)
+      let off := (py / 8) * 32 + (px / 8)
+      let tileId := bget vram (mapBase + off)
+      let attr := parseBgAttr (bget vram (0x2000 + mapBase + off))
+      let tx := if attr.xFlip then 7 - (px % 8) else (px % 8)
+      let ty := if attr.yFlip then 7 - (py % 8) else (py % 8)
+      let base := attr.bank * 0x2000 + tileAddr signed tileId + ty * 2
+      let idx := tilePix vram base tx
+      (cgbColor (palColor bgPal (attr.pal * 4 + idx)), idx, attr.prio)
+    let rec loop (x : Nat) (acc : Array (UInt32 × Nat × Bool)) : Array (UInt32 × Nat × Bool) :=
+      if x >= 160 then acc else loop (x + 1) (acc.push (pix x))
+    loop 0 (Array.mkEmpty 160)
+
+/-- CGB sprite-vs-BG mix decision: `true` = BG pixel wins.
+    Pan Docs "BG-to-OBJ Priority in CGB Mode" truth table: BG color 0
+    → OBJ; master (LCDC.0) clear → OBJ; both priority bits clear →
+    OBJ; otherwise (BG opaque, master set, *either* bit set) → BG. -/
+def cgbMixBgWins (bgIdx : Nat) (master spritePrio bgPrio : Bool) : Bool :=
+  bgIdx != 0 && master && (spritePrio || bgPrio)
+
+/-- Apply OBJ layer over a CGB background line → final ARGB colors.
+    In particular an OAM bit-7-set sprite goes behind *any* opaque BG
+    pixel (tile bit is not required), and a tile-priority BG pixel
+    covers even a priority-clear sprite (e.g. the Crystal title logo
+    over the crystal). -/
+def renderLineCgb (p : PpuState) (vram oam : ByteArray)
+    (bgPal obPal : Array UInt16) : Array UInt32 :=
+  let bg := renderBgCgb p vram bgPal
+  let tall := bitGet p.lcdc 2
+  let h : Nat := if tall then 16 else 8
+  let objOn := bitGet p.lcdc 1
+  let master := bitGet p.lcdc 0
+  if !objOn then bg.map (fun t => t.1)
+  else
+    let ly16 := p.ly.toNat + 16
+    let rec hasHit (i : Nat) : Bool :=
+      if i >= 40 then false
+      else
+        let y := (bget oam (i * 4)).toNat
+        if ly16 >= y && ly16 < y + h then true else hasHit (i + 1)
+    if !hasHit 0 then bg.map (fun t => t.1)
+    else
+      let sps := parseOam oam
+      let hits : Array Nat :=
+        (List.range 40).foldl (fun (acc : Array Nat) i =>
+          if acc.size >= 10 then acc
+          else
+            let s := sps[i]!
+            if p.ly.toNat + 16 >= s.y && p.ly.toNat + 16 < s.y + h then acc.push i
+            else acc) #[]
+      if hits.size == 0 then bg.map (fun t => t.1)
+      else
+        -- CGB priority is OAM order: first opaque sprite pixel wins
+        let pick (x : Nat) : Option (Sprite × UInt32) :=
+          hits.foldl (fun (best : Option (Sprite × UInt32)) i =>
+            match best with
+            | some _ => best
+            | none =>
+              let s := sps[i]!
+              if x + 8 >= s.x && x + 8 < s.x + 8 then
+                let sx := if s.xFlip then 7 - (x + 8 - s.x) else (x + 8 - s.x)
+                let sy0 := p.ly.toNat + 16 - s.y
+                let sy := if s.yFlip then (h - 1 - sy0) else sy0
+                let tile := if tall then (s.tile &&& 0xFE) + (sy / 8) else s.tile
+                let c := tilePix vram (s.vbank * 0x2000 + tile * 16 + (sy % 8) * 2) sx
+                if c == 0 then none
+                else some (s, cgbColor (palColor obPal (s.cgbPal * 4 + c)))
+              else none) none
+        let rec loop (x : Nat) (line : Array UInt32) : Array UInt32 :=
+          if x >= 160 then line
+          else
+            let (bgc, bgIdx, bgPrio) := bg[x]!
+            let out :=
+              match pick x with
+              | none => bgc
+              | some (s, c) =>
+                if cgbMixBgWins bgIdx master s.prio bgPrio then bgc else c
+            loop (x + 1) (line.set! x out)
+        loop 0 (bg.map (fun t => t.1))
 
 end PpuState
 

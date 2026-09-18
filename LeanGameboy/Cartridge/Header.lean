@@ -47,9 +47,23 @@ def ramBanksOf (c : UInt8) : Nat :=
   | 0x02 => 1 | 0x03 => 4 | 0x04 => 16 | 0x05 => 8
   | _ => 0
 
+/-- CGB support level from the 0x0143 flag byte. -/
+inductive CgbFlag where
+  | Dmg | Compatible | Exclusive
+deriving DecidableEq, Repr
+
+/-- Decode the 0x0143 CGB flag (only meaningful when the title area
+    carries it; 0x80 = CGB+DMG compatible, 0xC0 = CGB exclusive). -/
+def cgbFlagOf (b : UInt8) : CgbFlag :=
+  match b.toNat with
+  | 0x80 => .Compatible
+  | 0xC0 => .Exclusive
+  | _ => .Dmg
+
 /-- Parsed header of a loaded ROM. -/
 structure CartHeader where
   title : String := ""
+  cgb : CgbFlag := .Dmg
   cartType : UInt8 := 0
   mbc : MbcKind := .None
   battery : Bool := false
@@ -66,13 +80,16 @@ def headerChecksum (rom : ByteArray) : UInt8 :=
 
 /-- Parse the header of a ROM image. -/
 def parseHeader (rom : ByteArray) : CartHeader :=
-  let titleBytes := List.range 16 |>.map (fun i => bget rom (0x0134 + i))
+  let cgb := cgbFlagOf (bget rom 0x0143)
+  -- CGB titles are 11 bytes (0x0134..0x013E); DMG titles run to 0x0143.
+  let titleLen := match cgb with | .Dmg => 16 | _ => 11
+  let titleBytes := List.range titleLen |>.map (fun i => bget rom (0x0134 + i))
   let title := String.ofList (titleBytes.filterMap (fun b =>
     if b == 0 then none else some (Char.ofNat b.toNat)))
   let ct := bget rom 0x0147
   let romB := romBanksOf (bget rom 0x0148)
   let ramB := ramBanksOf (bget rom 0x0149)
-  { title, cartType := ct, mbc := mbcKindOf ct, battery := hasBattery ct,
+  { title, cgb, cartType := ct, mbc := mbcKindOf ct, battery := hasBattery ct,
     romBanks := romB, ramBanks := ramB, version := bget rom 0x014C,
     headerChecksumOk := headerChecksum rom == bget rom 0x014D }
 

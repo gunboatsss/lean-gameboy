@@ -39,6 +39,13 @@ def bootDefaults : Regs :=
     h := 0x01, l := 0x4D, sp := 0xFFFE, pc := 0x0100,
     z := true, n := false, hf := true, cf := true }
 
+/-- Post-boot CGB defaults for a CGB cartridge (boot ROM skipped).
+    Per Pan Docs power-up sequence: A=$11 signals CGB mode to games. -/
+def bootDefaultsCgb : Regs :=
+  { a := 0x11, b := 0x00, c := 0x00, d := 0xFF, e := 0x56,
+    h := 0x00, l := 0x0D, sp := 0xFFFE, pc := 0x0100,
+    z := true, n := false, hf := false, cf := false }
+
 /-- BC pair. -/
 def bc (r : Regs) : UInt16 := join16 r.b r.c
 /-- DE pair. -/

@@ -19,6 +19,22 @@ menu → gameplay with falling/moving pieces, score/level/lines panels
 and NEXT preview (screenshots via `--dump`). Scripted run:
 `--input "start@950+10,start@1400+10,start@2500+10"`.
 
+**Game Boy Color**: CGB cartridges boot into color mode (flag `0x143`,
+`A=$11` boot regs): 8×4 KiB WRAM banks (`SVBK`), 2×8 KiB VRAM banks
+(`VBK`), 8+8 15-bit palettes with auto-increment (`BGPI/BGPD`,
+`OBPI/OBPD`), tile-map attributes (palette/bank/flips/priority),
+color scanline renderer with CGB sprite priority, GDMA + HBlank DMA
+(`HDMA1-5`), and double-speed mode (`KEY1` + `STOP`, 2 T-cycles per
+M-cycle through timer/serial/APU/PPU).
+
+**Pokémon Crystal (U) 1.1 verified booting**: copyright → Game Freak
+logo → intro sequence in full color (60 s headless run reaches the
+animated intro with 18 on-screen colors; long black transitions in
+between are the game's own scene fades). `gb-test` pins the CGB
+hardware: WRAM/VRAM bank isolation, palette auto-increment +
+readback, `KEY1`/`STOP` speed switch with ~35k-cycle double-speed
+frames, GDMA bytes + cost, HBlank-DMA completion, white CGB frame.
+
 **Blargg `cpu_instrs` conformance**: all 11 individual ROMs `Passed`
 plus the bank-switched composite `Passed all tests` (MBC1, timer,
 interrupts, memory timing paths covered). Run test ROMs by cycles
@@ -43,12 +59,15 @@ fall-through arms the bug without advancing, bugged immediates shift
 down one byte, and a bugged `HALT` re-arms instead of advancing.
 
 **Machine-checked proofs** (`LeanGameboy/Proofs/`, all kernel-checked
-at build time, zero `sorry`/`axiom`): ALU flag contracts + identity
-(`Arith`), full invalid-opcode set + exhaustive length/coverage over
-all 512 opcodes (`Decode`), 12 memory-map non-interference lemmas
-(`Bus`), timer edge cases + IRQ acknowledgement (`Timer`), PPU modes,
-palette bounds, interrupt priority (`Ppu`), APU phase-step frame
-preservation (`Apu`), halt-bug spin/arming/immediates (`Halt`),
+at build time, zero `sorry`/`axiom`): ALU flag contracts, identity,
+commutativity and `Nat`-level characterization (`Arith`), exact AF
+codec bit positions (`Regs`), full invalid-opcode set + exhaustive
+length/coverage over all 512 opcodes (`Decode`), 12 memory-map
+non-interference lemmas + exact cycle accounting + HDMA/scanline
+cycle preservation (`Bus`), timer edge
+cases + IRQ acknowledgement (`Timer`), PPU modes, palette bounds,
+interrupt priority (`Ppu`), APU phase-step frame preservation (`Apu`),
+halt-bug spin/arming/immediates (`Halt`),
 sprite attribute decoding (`Sprite`). Bounded reachability: a 132k-instruction
 scripted run is proven to reach its target state via `native_decide`
 (`Reach` — kernel `decide` cannot scale there; full-game traces are
@@ -75,7 +94,8 @@ still builds and runs headless.
 ## Run
 
 ```sh
-# windowed (arrows = d-pad, X = A, Z = B, Enter = Start, RShift = Select)
+# windowed (arrows = d-pad, X = A, Z = B, Enter = Start, RShift = Select,
+# F1 = dump snapN.ppm + snapN.txt hardware snapshot for debugging)
 ./.lake/build/bin/lean-gameboy game.gb --scale 3
 
 # headless (CI / Blargg): run N frames, dump framebuffer + serial log
@@ -97,6 +117,7 @@ Battery saves load/store automatically as `<rom>.sav`.
 ## Layout
 
 - `LeanGameboy/Basic.lean` — bit/byte helpers
+- `LeanGameboy/Cgb.lean` — CGB banking/palette/HDMA helpers, BGR555 output
 - `LeanGameboy/Cpu/{Regs,Decode}.lean` — registers/flags, 512-opcode tables
 - `LeanGameboy/Cartridge/{Header,Mbc}.lean` — header parse, banking
 - `LeanGameboy/{Timer,Interrupts,Joypad,Serial}.lean` — peripherals
@@ -118,7 +139,11 @@ Battery saves load/store automatically as `<rom>.sav`.
   exactly with integer division.
 - Known v1 deviations: fixed 172-dot Mode 3 (no per-sprite penalty),
   OAM-order sprite priority, MBC2/MMM01/HuC/MBC6/7 read flat, `STOP`
-  behaves like `HALT`, invalid opcodes NOP instead of locking up, no CGB.
+  behaves like `HALT` in DMG mode, invalid opcodes NOP instead of
+  locking up, MBC3 RTC reads as `0xFF` (Crystal boots/plays; clock
+  events frozen), no speed-switch stall cycles (~2 ms switch is
+  instant), `FF6C`/`FF72-77` unmapped, CGB OBJ priority is pure OAM
+  order (no X-coordinate tiebreak).
 - Performance: ~14 ms/frame headless with sound, +~1.5 ms for the
   SDL present path (direct `Array UInt32` upload, no byte conversion)
   — real-time with margin. Hot-path techniques: lazy APU phase-debt

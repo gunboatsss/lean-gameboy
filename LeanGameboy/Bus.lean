@@ -10,6 +10,7 @@ import LeanGameboy.Cpu.Regs
 import LeanGameboy.Cpu.Decode
 import LeanGameboy.Cartridge.Header
 import LeanGameboy.Cartridge.Mbc
+import LeanGameboy.Cgb
 import LeanGameboy.Timer
 import LeanGameboy.Interrupts
 import LeanGameboy.Joypad
@@ -20,12 +21,14 @@ import LeanGameboy.Apu
 
 namespace GB
 
-/-- Complete DMG system state. -/
+/-- Complete DMG+CGB system state. -/
 structure GBState where
   regs : Regs := {}
   rom : ByteArray := ByteArray.empty
   mbc : MbcState := {}
   ram : ExtRam := {}
+  -- CGB-sized memories (uniform for both modes: 8×4 KiB WRAM banks,
+  -- 2×8 KiB VRAM banks; DMG games simply never select past bank 1/0)
   wram : ByteArray := ByteArray.empty
   vram : ByteArray := ByteArray.empty
   oam : ByteArray := ByteArray.empty
@@ -40,20 +43,36 @@ structure GBState where
   fb : Array UInt32 := fbBlank
   cycles : Nat := 0
   haltBug : Bool := false
+  -- CGB extensions
+  cgb : Bool := false          -- true when running a CGB cartridge
+  doubleSpeed : Bool := false  -- KEY1 double-speed active
+  speedPrep : Bool := false    -- KEY1 speed-switch armed
+  vbk : UInt8 := 0             -- VRAM bank select (bit 0)
+  svbk : UInt8 := 0            -- WRAM bank select (low 3 bits, 0 → 1)
+  bgpi : UInt8 := 0            -- BG palette index (bit 7 = auto-inc)
+  obpi : UInt8 := 0            -- OBJ palette index (bit 7 = auto-inc)
+  bgPal : Array UInt16 := palFresh
+  obPal : Array UInt16 := palFresh
+  hdma : HdmaState := {}
 
-/-- Fresh state for a ROM image (boot ROM skipped, DMG defaults). -/
+/-- Fresh state for a ROM image (boot ROM skipped, DMG/CGB defaults
+    selected from the cartridge CGB flag). -/
 def GBState.fresh (rom : ByteArray) : GBState :=
   let h := parseHeader rom
+  let cgb := match h.cgb with | .Dmg => false | _ => true
   let base : GBState := {}
   { base with
-    regs := Regs.bootDefaults
+    cgb := cgb
+    regs := if cgb then Regs.bootDefaultsCgb else Regs.bootDefaults
     rom := rom
     mbc := MbcState.ofHeader h
     ram := ExtRam.fresh h.ramBanks
-    wram := ByteArray.mk (Array.mk (List.replicate 0x2000 0))
-    vram := ByteArray.mk (Array.mk (List.replicate 0x2000 0))
+    wram := ByteArray.mk (Array.mk (List.replicate wramCgbSize 0))
+    vram := ByteArray.mk (Array.mk (List.replicate vramCgbSize 0))
     oam := ByteArray.mk (Array.mk (List.replicate 0xA0 0))
     hram := ByteArray.mk (Array.mk (List.replicate 0x7F 0))
+    bgPal := palFresh
+    obPal := palFresh
     fb := fbBlank }
 
 /-! ## APU register access -/
@@ -200,10 +219,10 @@ def busRead (s : GBState) (addr16 : UInt16) : UInt8 :=
   let addr := addr16.toNat
   if addr < 0x8000 then cartRead s.rom s.mbc addr
   else if addr < 0xA000 then
-    if s.ppu.mode == 3 then 0xFF else bget s.vram (addr - 0x8000)
+    if s.ppu.mode == 3 then 0xFF else vramRead s.vram s.vbk addr
   else if addr < 0xC000 then extRamRead s.ram s.mbc addr
-  else if addr < 0xE000 then bget s.wram (addr - 0xC000)
-  else if addr < 0xFE00 then bget s.wram (addr - 0xE000)
+  else if addr < 0xE000 then wramRead s.wram s.svbk addr
+  else if addr < 0xFE00 then wramRead s.wram s.svbk (addr - 0x2000)
   else if addr < 0xFEA0 then
     if s.ppu.mode >= 2 then 0xFF else bget s.oam (addr - 0xFE00)
   else if addr < 0xFF00 then 0xFF
@@ -229,6 +248,20 @@ def busRead (s : GBState) (addr16 : UInt16) : UInt8 :=
     | 0xFF49 => s.ppu.obp1
     | 0xFF4A => s.ppu.wy
     | 0xFF4B => s.ppu.wx
+    | 0xFF4D => -- KEY1: bit 7 = speed, bits 6-1 read as 1, bit 0 = armed
+      (if s.doubleSpeed then 0x80 else 0) ||| 0x7E |||
+        (if s.speedPrep then 0x01 else 0x00)
+    | 0xFF4F => s.vbk ||| 0xFE
+    | 0xFF51 => 0xFF -- HDMA1..4 write-only
+    | 0xFF52 => 0xFF
+    | 0xFF53 => 0xFF
+    | 0xFF54 => 0xFF
+    | 0xFF55 => s.hdma.statusReg
+    | 0xFF68 => s.bgpi
+    | 0xFF69 => palReadByte s.bgPal (s.bgpi.toNat % 64)
+    | 0xFF6A => s.obpi
+    | 0xFF6B => palReadByte s.obPal (s.obpi.toNat % 64)
+    | 0xFF70 => s.svbk ||| 0xF8
     | n =>
       if 0xFF10 <= n && n <= 0xFF3F then apuRead s n
       else 0xFF
@@ -243,6 +276,49 @@ def oamDma (s : GBState) (src : Nat) : GBState :=
     (fun (o : ByteArray) i => bset o i bytes[i]!) s.oam
   { s with oam := oam }
 
+/-- One HDMA byte copy (fold step): VRAM `dst+i` ← bus `src+i`.
+    Source reads go through the full bus (bank-aware); the
+    destination low nibble is forced to 0. -/
+def hdmaCopyStep (src dst : Nat) (st : GBState) (i : Nat) : GBState :=
+  let b := busRead st (w16 (src + i))
+  { st with vram := vramWrite st.vram st.vbk (0x8000 + ((dst + i) % 0x2000)) b }
+
+/-- Copy one 16-byte HDMA block. -/
+def hdmaBlock (s : GBState) (src dst : Nat) : GBState :=
+  (List.range 16).foldl (hdmaCopyStep src dst) s
+
+/-- Advance an HBlank HDMA by one block (called per completed visible
+    scanline while active). -/
+def hdmaHblank (s : GBState) : GBState :=
+  let h := s.hdma
+  if !h.active then s
+  else
+    let s1 := hdmaBlock s h.src h.dst
+    let left := if h.remaining <= 16 then 0 else h.remaining - 16
+    { s1 with hdma := { h with
+      src := (h.src + 16) % 65536
+      dst := (h.dst + 16) % 0x2000
+      remaining := left
+      active := left != 0 } }
+
+/-- Run a GDMA (general-purpose DMA) of `len` bytes immediately.
+    Returns updated state + stall cost in CPU M-cycles
+    (2 T-cycles/byte at wall clock: len/2 normal, len double). -/
+def hdmaGdma (s : GBState) (len : Nat) : GBState × Nat :=
+  let blocks := len / 16
+  let rec loop : Nat → GBState → GBState
+    | 0, st => st
+    | k + 1, st =>
+      let st1 := hdmaBlock st st.hdma.src st.hdma.dst
+      loop k { st1 with hdma := { st1.hdma with
+        src := (st1.hdma.src + 16) % 65536
+        dst := (st1.hdma.dst + 16) % 0x2000
+        remaining := if st1.hdma.remaining <= 16 then 0
+                     else st1.hdma.remaining - 16 } }
+  let s1 := loop blocks s
+  let s2 := { s1 with hdma := { s1.hdma with remaining := 0, active := false } }
+  (s2, if s.doubleSpeed then blocks * 16 else blocks * 8)
+
 /-- Write a byte to the bus. Returns updated state + extra M-cycles
     (OAM DMA costs 160). -/
 def busWrite (s : GBState) (addr16 : UInt16) (v : UInt8) : GBState × Nat :=
@@ -250,10 +326,11 @@ def busWrite (s : GBState) (addr16 : UInt16) (v : UInt8) : GBState × Nat :=
   if addr < 0x8000 then ({ s with mbc := cartWrite s.mbc addr v }, 0)
   else if addr < 0xA000 then
     if s.ppu.mode == 3 then (s, 0)
-    else ({ s with vram := bset s.vram (addr - 0x8000) v }, 0)
+    else ({ s with vram := vramWrite s.vram s.vbk addr v }, 0)
   else if addr < 0xC000 then ({ s with ram := extRamWrite s.ram s.mbc addr v }, 0)
-  else if addr < 0xE000 then ({ s with wram := bset s.wram (addr - 0xC000) v }, 0)
-  else if addr < 0xFE00 then ({ s with wram := bset s.wram (addr - 0xE000) v }, 0)
+  else if addr < 0xE000 then ({ s with wram := wramWrite s.wram s.svbk addr v }, 0)
+  else if addr < 0xFE00 then
+    ({ s with wram := wramWrite s.wram s.svbk (addr - 0x2000) v }, 0)
   else if addr < 0xFEA0 then
     if s.ppu.mode >= 2 then (s, 0)
     else ({ s with oam := bset s.oam (addr - 0xFE00) v }, 0)
@@ -303,6 +380,48 @@ def busWrite (s : GBState) (addr16 : UInt16) (v : UInt8) : GBState × Nat :=
     | 0xFF49 => ({ s with ppu := { s.ppu with obp1 := v } }, 0)
     | 0xFF4A => ({ s with ppu := { s.ppu with wy := v } }, 0)
     | 0xFF4B => ({ s with ppu := { s.ppu with wx := v } }, 0)
+    | 0xFF4D => ({ s with speedPrep := v.toNat % 2 == 1 }, 0) -- KEY1: bit 0 arms
+    | 0xFF4F => ({ s with vbk := v &&& 0x01 }, 0)
+    | 0xFF51 => ({ s with hdma := { s.hdma with
+        src := ((v.toNat * 256) + s.hdma.src % 256) % 65536 } }, 0)
+    | 0xFF52 => ({ s with hdma := { s.hdma with
+        src := (s.hdma.src / 256) * 256 + (v.toNat / 16) * 16 } }, 0)
+    | 0xFF53 => ({ s with hdma := { s.hdma with
+        dst := ((v.toNat % 32) * 256 + s.hdma.dst % 256) % 0x2000 } }, 0)
+    | 0xFF54 => ({ s with hdma := { s.hdma with
+        dst := ((s.hdma.dst / 256) * 256 + (v.toNat / 16) * 16) % 0x2000 } }, 0)
+    | 0xFF55 =>
+      if bitGet v 7 then
+        if s.hdma.active then
+          -- HBlank DMA in progress: write with bit 7 cancels it
+          ({ s with hdma := { s.hdma with active := false } }, 0)
+        else
+          -- start HBlank DMA (first block transfers at next HBlank)
+          ({ s with hdma := { s.hdma with
+            remaining := HdmaState.totalLen v, active := true } }, 0)
+      else
+        if s.hdma.active then
+          -- GDMA write with bit 7 clear cancels an active HBlank DMA
+          ({ s with hdma := { s.hdma with active := false } }, 0)
+        else
+          let (s1, cost) := hdmaGdma
+            { s with hdma := { s.hdma with
+              remaining := HdmaState.totalLen v } }
+            (HdmaState.totalLen v)
+          (s1, cost)
+    | 0xFF68 => ({ s with bgpi := v }, 0)
+    | 0xFF69 =>
+      let idx := s.bgpi.toNat % 64
+      ({ s with
+        bgPal := palWriteByte s.bgPal idx v
+        bgpi := palAutoInc s.bgpi }, 0)
+    | 0xFF6A => ({ s with obpi := v }, 0)
+    | 0xFF6B =>
+      let idx := s.obpi.toNat % 64
+      ({ s with
+        obPal := palWriteByte s.obPal idx v
+        obpi := palAutoInc s.obpi }, 0)
+    | 0xFF70 => ({ s with svbk := v &&& 0x07 }, 0)
     | n =>
       if 0xFF10 <= n && n <= 0xFF3F then (apuWrite s n v, 0)
       else (s, 0)
@@ -482,7 +601,14 @@ def exec (s : GBState) (i : Instr) (fetchPC : UInt16) : GBState × Nat :=
   match i with
   | .Nop => (withPC s nextPC, 1)
   | .Invalid => (withPC s nextPC, 1) -- v1 deviation: NOP instead of lockup
-  | .Stop => (withPC { s with regs := { r with halted := true } } (fetchPC + 2), 1)
+  | .Stop =>
+    if s.cgb && s.speedPrep then
+      -- KEY1 armed: switch CPU speed instead of halting
+      -- (v1: the ~2 ms switch stall is not modelled)
+      (withPC { s with doubleSpeed := !s.doubleSpeed, speedPrep := false }
+        (fetchPC + 2), 1)
+    else
+      (withPC { s with regs := { r with halted := true } } (fetchPC + 2), 1)
   | .Halt =>
     let pending := irqPending s.ie s.if_
     if r.ime then
@@ -657,13 +783,31 @@ def exec (s : GBState) (i : Instr) (fetchPC : UInt16) : GBState × Nat :=
 
 /-! ## Component stepping -/
 
-/-- Advance timer/serial/APU/PPU by `m` M-cycles; collect IRQs into IF;
-    render a completed scanline into the framebuffer. -/
+/-- Finish a completed scanline: one HBlank-DMA block per visible line
+    plus the framebuffer blit (DMG shades or CGB colors). -/
+def finishLine (s : GBState) (ppu : PpuState) : GBState :=
+  let done := (ppu.ly.toNat + 153) % 154
+  if done < 144 then
+    -- HBlank DMA transfers one block per visible scanline
+    let s1 := hdmaHblank s
+    let pr := { ppu with ly := w8 done }
+    if s1.cgb then
+      let line := PpuState.renderLineCgb pr s1.vram s1.oam s1.bgPal s1.obPal
+      { s1 with fb := fbBlitColors s1.fb done line }
+    else
+      let line := PpuState.renderLine pr s1.vram s1.oam
+      { s1 with fb := fbBlitLine s1.fb done line }
+  else s
+
+/-- Advance timer/serial/APU/PPU by `m` CPU M-cycles; collect IRQs
+    into IF; run one HBlank-DMA block per completed visible scanline;
+    render a completed scanline into the framebuffer.
+    In double-speed mode 1 M-cycle = 2 T-cycles (else 4). -/
 def advance (s : GBState) (m : Nat) : GBState :=
-  let dots := m * 4
-  let timer := s.timer.step m
+  let dots := if s.doubleSpeed then m * 2 else m * 4
+  let timer := s.timer.stepDots dots
   let serial := s.serial.step dots
-  let apu := s.apu.step m
+  let apu := s.apu.stepDots dots
   let (ppu, vblEdge, statEdge, lineDone, _frameDone) := s.ppu.step dots
   let mutIf := s.if_
   let mutIf := if timer.irq then irqRaise mutIf irqTimer else mutIf
@@ -681,14 +825,7 @@ def advance (s : GBState) (m : Nat) : GBState :=
     if_ := mutIf
     cycles := s.cycles + m }
   -- render the scanline that just completed (previous LY)
-  if lineDone then
-    let done := (ppu.ly.toNat + 153) % 154
-    if done < 144 then
-      let pr := { ppu with ly := w8 done }
-      let line := PpuState.renderLine pr s1.vram s1.oam
-      { s1 with fb := fbBlitLine s1.fb done line }
-    else s1
-  else s1
+  if lineDone then finishLine s1 ppu else s1
 
 /-- Service interrupt `bit`: push PC, jump to vector. -/
 def serviceIrq (s : GBState) (bit : Nat) : GBState :=

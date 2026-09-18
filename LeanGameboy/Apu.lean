@@ -340,15 +340,15 @@ def emitDebt (t debt0 n : Nat) : Nat :=
     let left := (t - debt0) % 95
     if left == 0 then 95 else 95 - left
 
-/-- Advance the APU by `mCycles` M-cycles, emitting ~44.1 kHz samples.
+/-- Advance the APU by `dots` T-cycles, emitting ~44.1 kHz samples.
     Channel phases are applied lazily: most batches only advance
     timers and accumulate `phaseDebt`; phases flush progressively at
     sample points (and fully on register writes via `flush`), which is
     exact since phases are unobservable except through `mix`. -/
-def step (s : ApuState) (mCycles : Nat) : ApuState :=
+def stepDots (s : ApuState) (dots : Nat) : ApuState :=
   if !s.powered then s
   else
-    let t := mCycles * 4
+    let t := dots
     -- sequencer timers (length/envelope/sweep need no phases)
     let seq0 := if s.seqTimer == 0 then 8192 else s.seqTimer
     let (seqTimer', ticks) :=
@@ -389,6 +389,12 @@ def step (s : ApuState) (mCycles : Nat) : ApuState :=
         let left := (t - debt0) % 95
         let st3 := st2.advanceCh left
         { st3 with sampleDebt := if left == 0 then 95 else 95 - left }
+
+/-- Advance the APU by `mCycles` M-cycles at single speed
+    (1 M-cycle = 4 T-cycles). Double-speed callers use `stepDots`
+    with 2 T-cycles per M-cycle instead. -/
+def step (s : ApuState) (mCycles : Nat) : ApuState :=
+  s.stepDots (mCycles * 4)
 
 /-- Drain accumulated sample bytes (frontend consumes them). -/
 def drain (s : ApuState) : ApuState × ByteArray :=

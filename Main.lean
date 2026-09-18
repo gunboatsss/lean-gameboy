@@ -22,6 +22,7 @@ structure Opts where
   dump : String := ""
   input : String := ""
   debug : Bool := false
+  snapdbg : String := ""
 
 def parseArgs : List String → Opts → Opts
   | [], o => o
@@ -33,6 +34,7 @@ def parseArgs : List String → Opts → Opts
   | "--dump" :: p :: rest, o => parseArgs rest { o with dump := p }
   | "--input" :: spec :: rest, o => parseArgs rest { o with input := spec }
   | "--debug" :: rest, o => parseArgs rest { o with debug := true }
+  | "--snapdbg" :: p :: rest, o => parseArgs rest { o with snapdbg := p }
   | a :: rest, o =>
     if o.rom == "" && !a.startsWith "--" then parseArgs rest { o with rom := a }
     else parseArgs rest o
@@ -58,12 +60,68 @@ def parseInput (spec : String) : InputScript :=
         | _ => acc
       | _ => acc) #[]
 
+/-- Two-digit hex for debug dumps. -/
+def hex2 (v : UInt8) : String :=
+  let h : Nat → Char
+    | 0 => '0' | 1 => '1' | 2 => '2' | 3 => '3' | 4 => '4' | 5 => '5'
+    | 6 => '6' | 7 => '7' | 8 => '8' | 9 => '9' | 10 => 'a' | 11 => 'b'
+    | 12 => 'c' | 13 => 'd' | 14 => 'e' | _ => 'f'
+  String.ofList [h (v.toNat / 16), h (v.toNat % 16)]
+
+/-- Four-digit hex (palette entries). -/
+def hex4 (v : UInt16) : String :=
+  hex2 (v >>> 8).toUInt8 ++ hex2 v.toUInt8
+
+/-- Full PPU/debug snapshot as text (F1 in windowed mode, or
+    `--snapdbg` headless): registers, palettes, OAM, both VRAM banks. -/
+def snapshotText (s : GBState) : String := Id.run do
+  let r := s.regs
+  let p := s.ppu
+  let mut t := s!"[snap] frame={s.ppu.frame} cycles={s.cycles} pc={r.pc.toNat}\n"
+  t := t ++ s!"[regs] AF={r.af.toNat} BC={r.bc.toNat} DE={r.de.toNat} HL={r.hl.toNat} SP={r.sp.toNat} IME={r.ime} halted={r.halted}\n"
+  t := t ++ s!"[irq] IE={s.ie.toNat} IF={s.if_.toNat}\n"
+  t := t ++ s!"[ppu] lcdc={p.lcdc.toNat} stat={p.stat.toNat} ly={p.ly.toNat} lyc={p.lyc.toNat} scx={p.scx.toNat} scy={p.scy.toNat} wx={p.wx.toNat} wy={p.wy.toNat} bgp={p.bgp.toNat} obp0={p.obp0.toNat} obp1={p.obp1.toNat} mode={p.mode}\n"
+  t := t ++ s!"[cgb] cgb={s.cgb} double={s.doubleSpeed} prep={s.speedPrep} vbk={s.vbk.toNat} svbk={s.svbk.toNat} bgpi={s.bgpi.toNat} obpi={s.obpi.toNat} hdma={repr s.hdma}\n"
+  t := t ++ "[bgpal]\n"
+  for i in List.range 32 do
+    let c := if h : i < s.bgPal.size then s.bgPal[i]'h else 0
+    t := t ++ hex4 c ++ (if i % 8 == 7 then "\n" else " ")
+  t := t ++ "[obpal]\n"
+  for i in List.range 32 do
+    let c := if h : i < s.obPal.size then s.obPal[i]'h else 0
+    t := t ++ hex4 c ++ (if i % 8 == 7 then "\n" else " ")
+  t := t ++ "[oam]\n"
+  for i in List.range 40 do
+    let sp := PpuState.parseSprite s.oam i
+    let attr := bget s.oam (i * 4 + 3)
+    t := t ++ s!"{i}: y={sp.y} x={sp.x} tile={sp.tile} attr=0x{hex2 attr} prio={sp.prio} yflip={sp.yFlip} xflip={sp.xFlip} cgbPal={sp.cgbPal} bank={sp.vbank}\n"
+  for bank in [0, 1] do
+    t := t ++ s!"[vram bank{bank}]\n"
+    for row in List.range (0x2000 / 16) do
+      let off := bank * 0x2000 + row * 16
+      let mut line := s!"{off}:"
+      for k in List.range 16 do
+        line := line ++ " " ++ hex2 (bget s.vram (off + k))
+      t := t ++ line ++ "\n"
+  t
+
 /-- Windowed run: one emulated frame per host frame, throttled.
+    F1 (edge-triggered) writes `snapN.ppm` + `snapN.txt` snapshots.
     Partial: runs until the user quits (or SDL is unavailable). -/
-partial def windowLoop (s : GBState) (nextDue : Nat) (mute : Bool) : IO GBState := do
+partial def windowLoop (s : GBState) (nextDue : Nat) (mute : Bool)
+    (prevF1 : UInt32) (snaps : Nat) : IO GBState := do
   let mask ← poll
   if mask / 256 % 2 == 1 then pure s  -- quit requested
   else
+    let f1 := mask / 512 % 2
+    let snaps ←
+      if f1 == 1 && prevF1 == 0 then do
+        let tag := s!"snap{snaps}"
+        dumpPPM s (tag ++ ".ppm")
+        IO.FS.writeFile (tag ++ ".txt") (snapshotText s)
+        IO.println s!"[gb] snapshot {tag} written (frame {s.ppu.frame})"
+        pure (snaps + 1)
+      else pure snaps
     let s := setButtons s (buttonsOf s.joy mask)
     let s := runFrame s
     let s ← presentFrame s mute
@@ -71,7 +129,7 @@ partial def windowLoop (s : GBState) (nextDue : Nat) (mute : Bool) : IO GBState 
     let due := nextDue + frameMs.toNat
     if due > now.toNat then
       delayMs (due - now.toNat).toUInt32
-    windowLoop s due mute
+    windowLoop s due mute f1 snaps
 
 def runWindowed (s0 : GBState) (scale : Nat) (mute : Bool) (savPath : System.FilePath) : IO Unit := do
   let rc ← openWindow scale.toUInt32
@@ -82,7 +140,7 @@ def runWindowed (s0 : GBState) (scale : Nat) (mute : Bool) (savPath : System.Fil
   let t0 ← ticksMs
   let send ←
     if rc != 0 then pure (runFrames s0 60)
-    else windowLoop s0 t0.toNat mute
+    else windowLoop s0 t0.toNat mute 0 0
   close
   saveRAM send savPath
   IO.println s!"[gb] done. cycles={send.cycles} serial={serialText send}"
@@ -109,14 +167,6 @@ partial def runUntilCyclesIO (s0 : GBState) (cycles : Nat) (progressEvery : Nat)
         else loop st (k + 1)
   loop s0 0
 
-/-- Two-digit hex for debug dumps. -/
-def hex2 (v : UInt8) : String :=
-  let h : Nat → Char
-    | 0 => '0' | 1 => '1' | 2 => '2' | 3 => '3' | 4 => '4' | 5 => '5'
-    | 6 => '6' | 7 => '7' | 8 => '8' | 9 => '9' | 10 => 'a' | 11 => 'b'
-    | 12 => 'c' | 13 => 'd' | 14 => 'e' | _ => 'f'
-  String.ofList [h (v.toNat / 16), h (v.toNat % 16)]
-
 /-- Print a CPU/hardware snapshot for debugging soft-locks. -/
 def debugState (s : GBState) : IO Unit := do
   let r := s.regs
@@ -130,11 +180,22 @@ def debugState (s : GBState) : IO Unit := do
     if y != 0 then
       IO.println s!"[oam {i}] y={y} x={(bget s.oam (i * 4 + 1)).toNat} tile={(bget s.oam (i * 4 + 2)).toNat} attr={(bget s.oam (i * 4 + 3)).toNat}"
   -- WRAM + HRAM hex dump (diff across runs to see if input registers)
-  for base in List.range 512 do
+  for base in List.range (s.wram.size / 16) do
     let mut line := ""
     for k in List.range 16 do
       line := line ++ hex2 (bget s.wram (base * 16 + k))
     IO.println s!"[wram {base}] {line}"
+  IO.println s!"[cgb] cgb={s.cgb} double={s.doubleSpeed} prep={s.speedPrep} vbk={s.vbk.toNat} svbk={s.svbk.toNat} bgpi={s.bgpi.toNat} obpi={s.obpi.toNat} hdma={repr s.hdma}"
+  let mut bgline := "[bgpal]"
+  for i in List.range 32 do
+    let c := if h : i < s.bgPal.size then s.bgPal[i]'h else 0
+    bgline := bgline ++ s!" {c.toNat}"
+  IO.println bgline
+  let mut obline := "[obpal]"
+  for i in List.range 32 do
+    let c := if h : i < s.obPal.size then s.obPal[i]'h else 0
+    obline := obline ++ s!" {c.toNat}"
+  IO.println obline
   let mut hline := ""
   for k in List.range 127 do
     hline := hline ++ hex2 (bget s.hram k)
@@ -190,7 +251,7 @@ def main (args : List String) : IO Unit := do
     let romPath : System.FilePath := o.rom
     let bytes ← IO.FS.readBinFile romPath
     let h := parseHeader bytes
-    IO.println s!"[gb] {h.title} type={h.cartType.toNat} mbc={repr h.mbc} romBanks={h.romBanks} ramBanks={h.ramBanks} checksumOk={h.headerChecksumOk} logoOk={logoOk bytes}"
+    IO.println s!"[gb] {h.title} type={h.cartType.toNat} mbc={repr h.mbc} cgb={repr h.cgb} romBanks={h.romBanks} ramBanks={h.ramBanks} checksumOk={h.headerChecksumOk} logoOk={logoOk bytes}"
     let s0 := loadROM bytes
     let savPath : System.FilePath := o.rom ++ ".sav"
     -- load an existing .sav if present (ignore errors)
@@ -204,6 +265,8 @@ def main (args : List String) : IO Unit := do
           (fun joy mask => buttonsOf joy mask.toUInt32))
       if o.dump != "" then
         dumpPPM send o.dump
+      if o.snapdbg != "" then
+        IO.FS.writeFile o.snapdbg (snapshotText send)
       saveRAM send savPath
       IO.println s!"[gb] frames={o.frames} cycles={send.cycles} LY={send.ppu.ly} serial={serialText send}"
       if o.debug then debugState send
