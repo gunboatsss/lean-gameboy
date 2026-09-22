@@ -108,7 +108,7 @@ def snapshotText (s : GBState) : String := Id.run do
 /-- Windowed run: one emulated frame per host frame, throttled.
     F1 (edge-triggered) writes `snapN.ppm` + `snapN.txt` snapshots.
     Partial: runs until the user quits (or SDL is unavailable). -/
-partial def windowLoop (s : GBState) (nextDue : Nat) (mute : Bool)
+partial def windowLoop (s : GBState) (nextDue frac : Nat) (mute : Bool)
     (prevF1 : UInt32) (snaps : Nat) : IO GBState := do
   let mask ← poll
   if mask / 256 % 2 == 1 then pure s  -- quit requested
@@ -125,11 +125,11 @@ partial def windowLoop (s : GBState) (nextDue : Nat) (mute : Bool)
     let s := setButtons s (buttonsOf s.joy mask)
     let s := runFrame s
     let s ← presentFrame s mute
+    let (due, frac) := nextDeadline nextDue frac
     let now ← ticksMs
-    let due := nextDue + frameMs.toNat
     if due > now.toNat then
       delayMs (due - now.toNat).toUInt32
-    windowLoop s due mute f1 snaps
+    windowLoop s due frac mute f1 snaps
 
 def runWindowed (s0 : GBState) (scale : Nat) (mute : Bool) (savPath : System.FilePath) : IO Unit := do
   let rc ← openWindow scale.toUInt32
@@ -140,7 +140,7 @@ def runWindowed (s0 : GBState) (scale : Nat) (mute : Bool) (savPath : System.Fil
   let t0 ← ticksMs
   let send ←
     if rc != 0 then pure (runFrames s0 60)
-    else windowLoop s0 t0.toNat mute 0 0
+    else windowLoop s0 t0.toNat 0 mute 0 0
   close
   saveRAM send savPath
   IO.println s!"[gb] done. cycles={send.cycles} serial={serialText send}"

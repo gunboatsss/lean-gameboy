@@ -35,7 +35,17 @@ def presentFrame (s : GBState) (mute : Bool) : IO GBState := do
   present
   pure s
 
-/-- Target frame period: 70224 dots at 4194304 Hz ≈ 16.74 ms. -/
-def frameMs : UInt32 := 17
+/-- Target frame period: 70224 dots at 4194304 Hz = 16 + 48674/65536 ms
+    (≈ 16.74 ms). A flat 17 ms throttle runs ~1.5% slow, so SDL drains
+    its audio queue faster than the emulator fills it (underrun gaps
+    are heard as crackling). -/
+def frameMsBase : Nat := 16
+def frameMsFracStep : Nat := 48674
+def frameMsFracMod : Nat := 65536
+
+/-- Advance the fractional frame deadline. Returns `(due, frac')`. -/
+def nextDeadline (nextDue frac : Nat) : Nat × Nat :=
+  let f := frac + frameMsFracStep
+  (nextDue + frameMsBase + f / frameMsFracMod, f % frameMsFracMod)
 
 end GB.Sdl

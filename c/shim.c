@@ -222,11 +222,21 @@ lean_obj_res gb_poll(lean_obj_arg w) {
 lean_obj_res gb_audio(b_lean_obj_arg samples, lean_obj_arg w) {
     if (g_audio && samples) {
         size_t n = lean_sarray_size(samples);
-        /* avoid unbounded latency: drop if more than ~100ms queued */
-        if (p_GetQueuedAudioSize(g_audio) < 44100 / 10 * 2 && n > 0) {
-            p_QueueAudio(g_audio,
-                         (const void *)lean_sarray_cptr(samples),
-                         (uint32_t)n);
+        /* avoid unbounded latency: cap queued audio at ~100ms.
+           Queue what fits instead of dropping the whole frame, so a
+           transient overrun trims milliseconds (slight fast-forward)
+           rather than punching a ~16ms hole (audible pop). */
+        uint32_t queued = p_GetQueuedAudioSize(g_audio);
+        uint32_t cap = 44100 / 10 * 2;
+        if (queued < cap && n > 0) {
+            uint32_t room = cap - queued;
+            uint32_t m = n < room ? (uint32_t)n : room;
+            m &= ~1u; /* keep S16 sample alignment */
+            if (m > 0) {
+                p_QueueAudio(g_audio,
+                             (const void *)lean_sarray_cptr(samples),
+                             m);
+            }
         }
     }
     return lean_io_result_mk_ok(lean_box(0));

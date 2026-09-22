@@ -84,7 +84,12 @@ deriving Repr
 /-- Whole APU state. `phaseDebt` accumulates T-cycles of channel-phase
     time not yet applied: phases are unobservable except through `mix`,
     so stepping only advances timers and flushes phases at sample
-    points (or on register writes — see `flush`). -/
+    points (or on register writes — see `flush`).
+    `sampleErr` is the Bresenham remainder that makes the 44100 Hz
+    sample clock exact (see `nextSampleGap`); `hpX`/`hpY` are the
+    DC-blocker (high-pass) filter state, so the mixer's constant bias
+    decays to true silence instead of holding the speaker cone off
+    centre. -/
 structure ApuState where
   ch1 : PulseCh := {}
   ch2 : PulseCh := {}
@@ -96,8 +101,11 @@ structure ApuState where
   powered : Bool := false
   seqStep : Nat := 0
   seqTimer : Nat := 0     -- T-cycles until next 512 Hz tick (8192)
-  sampleDebt : Nat := 0   -- T-cycles until next 44100 Hz sample (~95)
+  sampleDebt : Nat := 0   -- T-cycles until next 44100 Hz sample (95/96)
+  sampleErr : Nat := 0    -- Bresenham remainder, always < 44100
   phaseDebt : Nat := 0    -- unapplied channel-phase T-cycles
+  hpX : Int := 0          -- DC-blocker previous raw input
+  hpY : Int := 0          -- DC-blocker previous filtered output
   -- Emitted samples as S16LE bytes (unboxed: avoids GC marking costs
   -- that boxed `Array Int` would incur as the buffer grows headless).
   samples : ByteArray := ByteArray.empty
@@ -301,12 +309,48 @@ def allQuiet (s : ApuState) : Bool :=
   !s.ch1.sweepEnable
 
 /-- Silence level of `mix` when all channels are off (DC offset from
-    master volume/panning — pushed to keep the audio clock exact). -/
+    master volume/panning). This is the *raw* mixer bias fed into the
+    DC blocker — the emitted level decays to 0 (see `hpStep`), keeping
+    the audio clock exact without a permanent DC offset. -/
 def silence (s : ApuState) : Int :=
   let volL := (s.nr50.toNat / 16) % 8
   let volR := s.nr50.toNat % 8
   let m : Int := (-30 * (volL + 1) + -30 * (volR + 1)) * 64
   if m > 32767 then 32767 else if m < -32768 then -32768 else m
+
+/-- Base T-cycles per 44100 Hz sample (4194304 / 44100 ≈ 95.109). -/
+def sampleBase : Nat := 95
+
+/-- Bresenham step: 4194304 - 95 * 44100 = 4804. -/
+def sampleErrStep : Nat := 4804
+
+/-- Bresenham modulus (audio rate). -/
+def sampleErrMax : Nat := 44100
+
+/-- Schedule the next sample gap from the Bresenham error: most gaps
+    are 95 T-cycles, every ~9th is 96, so the mean gap is exactly
+    4194304 / 44100 T-cycles. A fixed 95-cycle gap would run ~0.1%
+    fast, slowly filling SDL's queue until whole frames get dropped
+    (audible pops); a fixed 96 would starve it instead. -/
+def nextSampleGap (err : Nat) : Nat × Nat :=
+  let e := err + sampleErrStep
+  if e >= sampleErrMax then (96, e - sampleErrMax) else (95, e)
+
+/-- Truncated division by 1024 (toward zero). Lean's `/` on `Int`
+    floors, which would make every value in `(-1024, 0]` a fixed point
+    of the DC blocker below (frozen residual DC); truncation leaves 0
+    as the only fixed point. -/
+def tdiv1024 (v : Int) : Int :=
+  if 0 <= v then v / 1024 else -((-v) / 1024)
+
+/-- One DC-blocker (first-order high-pass) step:
+    `y = x - hpX + trunc(hpY * 1023 / 1024)` (≈ 7 Hz cutoff at 44.1 kHz).
+    Removes the mixer's constant bias and turns abrupt register-write
+    steps into quickly-decaying thumps, like the Game Boy's output
+    capacitor. -/
+def hpStep (s : ApuState) (x : Int) : ApuState × Int :=
+  let y := x - s.hpX + tdiv1024 (s.hpY * 1023)
+  ({ s with hpX := x, hpY := y }, y)
 
 /-- Advance all channel phases by `t` T-cycles (bulk, O(1) each
     except noise which iterates its short LFSR period). -/
@@ -337,18 +381,14 @@ def pushSample (b : ByteArray) (v : Int) : ByteArray :=
   let u := (c % 65536 + 65536) % 65536
   (b.push (w8 u.toNat)).push (w8 (u.toNat / 256))
 
-/-- Sample debt after a batch emitting `n` samples. -/
-def emitDebt (t debt0 n : Nat) : Nat :=
-  if n == 0 then debt0 - t
-  else
-    let left := (t - debt0) % 95
-    if left == 0 then 95 else 95 - left
-
-/-- Advance the APU by `dots` T-cycles, emitting ~44.1 kHz samples.
+/-- Advance the APU by `dots` T-cycles, emitting exact-~44.1 kHz samples
+    (mean gap exactly 4194304 / 44100 T-cycles via `nextSampleGap`).
     Channel phases are applied lazily: most batches only advance
     timers and accumulate `phaseDebt`; phases flush progressively at
     sample points (and fully on register writes via `flush`), which is
-    exact since phases are unobservable except through `mix`. -/
+    exact since phases are unobservable except through `mix`.
+    Every emitted sample goes through the DC blocker (`hpStep`), so
+    silent stretches emit true zero instead of the mixer's DC bias. -/
 def stepDots (s : ApuState) (dots : Nat) : ApuState :=
   if !s.powered then s
   else
@@ -361,38 +401,68 @@ def stepDots (s : ApuState) (dots : Nat) : ApuState :=
         let rest := t - seq0
         let rem := rest % 8192
         (if rem == 0 then 8192 else 8192 - rem, 1 + rest / 8192)
-    let debt0 := if s.sampleDebt == 0 then 95 else s.sampleDebt
-    let n : Nat := if debt0 > t then 0 else 1 + (t - debt0) / 95
+    -- time until the first sample of this batch, plus the already-
+    -- scheduled Bresenham error (`sampleDebt == 0` only in fresh state)
+    let (debt0, err0) : Nat × Nat :=
+      if s.sampleDebt == 0 then (sampleBase, s.sampleErr + sampleErrStep)
+      else (s.sampleDebt, s.sampleErr)
     if allQuiet s && ticks == 0 then
       -- silent fast path (phases frozen; flushed on register writes)
-      let rec fill : Nat → ByteArray → ByteArray
-        | 0, acc => acc
-        | k + 1, acc => fill k (pushSample acc (silence s))
-      { s with
-        seqTimer := seqTimer'
-        sampleDebt := emitDebt t debt0 n
-        phaseDebt := s.phaseDebt + t
-        samples := fill n s.samples }
+      if debt0 > t then
+        { s with
+          seqTimer := seqTimer'
+          sampleDebt := debt0 - t
+          sampleErr := err0
+          phaseDebt := s.phaseDebt + t }
+      else
+        let (stA, y0) := hpStep s (silence s)
+        let stB := { stA with seqTimer := seqTimer' }
+        let st0 := { stB with samples := pushSample stB.samples y0 }
+        let (g1, er1) := nextSampleGap err0
+        let rec fill : Nat → Nat → Nat → Nat → ApuState → ApuState
+          | 0, _, _, _, st => st
+          | f + 1, rem, gap, err, st =>
+            if gap > rem then
+              { st with
+                sampleDebt := gap - rem
+                sampleErr := err
+                phaseDebt := st.phaseDebt + t }
+            else
+              let (st1, y) := hpStep st (silence s)
+              let st2 := { st1 with samples := pushSample st1.samples y }
+              let (g, er) := nextSampleGap err
+              fill f (rem - gap) g er st2
+        fill (t + 1) (t - debt0) g1 er1 st0
     else
       let s1 := seqTicks s ticks
       let s1 := { s1 with seqTimer := seqTimer' }
-      if n == 0 then
+      if debt0 > t then
         -- no samples this batch: accumulate debt, no channel work
         { s1 with
           phaseDebt := s1.phaseDebt + t
-          sampleDebt := debt0 - t }
+          sampleDebt := debt0 - t
+          sampleErr := err0 }
       else
         -- flush pending + batch time progressively at sample points
-        let rec loop : Nat → Nat → ApuState → ApuState
-          | 0, _, st => st
-          | i + 1, gap, st =>
-            let st1 := st.advanceCh gap
-            loop i 95 { st1 with samples := pushSample st1.samples st1.mix }
-        let st2 := loop n (s1.phaseDebt + debt0) s1
-        let st2 := { st2 with phaseDebt := 0 }
-        let left := (t - debt0) % 95
-        let st3 := st2.advanceCh left
-        { st3 with sampleDebt := if left == 0 then 95 else 95 - left }
+        let st0 := s1.advanceCh (s1.phaseDebt + debt0)
+        let (st0b, y0) := hpStep st0 st0.mix
+        let st0c := { st0b with
+          phaseDebt := 0
+          samples := pushSample st0b.samples y0 }
+        let (g1, er1) := nextSampleGap err0
+        let rec loop : Nat → Nat → Nat → Nat → ApuState → ApuState
+          | 0, _, _, _, st => st
+          | f + 1, rem, gap, err, st =>
+            if gap > rem then
+              let st1 := st.advanceCh rem
+              { st1 with phaseDebt := 0, sampleDebt := gap - rem, sampleErr := err }
+            else
+              let st1 := st.advanceCh gap
+              let (st2, y) := hpStep st1 st1.mix
+              let st3 := { st2 with samples := pushSample st2.samples y }
+              let (g, er) := nextSampleGap err
+              loop f (rem - gap) g er st3
+        loop (t + 1) (t - debt0) g1 er1 st0c
 
 /-- Advance the APU by `mCycles` M-cycles at single speed
     (1 M-cycle = 4 T-cycles). Double-speed callers use `stepDots`
