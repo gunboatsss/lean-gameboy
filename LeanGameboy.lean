@@ -27,3 +27,5 @@ import LeanGameboy.Proofs.Apu
 import LeanGameboy.Proofs.Halt
 import LeanGameboy.Proofs.Reach
 import LeanGameboy.Proofs.Sprite
+import LeanGameboy.Proofs.Spec
+import LeanGameboy.Proofs.Stack

@@ -133,6 +133,50 @@ theorem hdmaHblank_cycles (s : GBState) :
   · rfl
   · simp [hdmaBlock_cycles]
 
+/-- HDMA steps never move the stack pointer (same fold pattern). -/
+theorem hdmaCopyStep_sp (src dst : Nat) (st : GBState) (i : Nat) :
+    (hdmaCopyStep src dst st i).regs.sp = st.regs.sp := rfl
+
+theorem hdmaFold_sp (l : List Nat) (src dst : Nat) (st : GBState) :
+    (l.foldl (hdmaCopyStep src dst) st).regs.sp = st.regs.sp := by
+  induction l generalizing st with
+  | nil => rfl
+  | cons _ _ ih => simp only [List.foldl_cons, ih, hdmaCopyStep_sp]
+
+theorem hdmaBlock_sp (s : GBState) (src dst : Nat) :
+    (hdmaBlock s src dst).regs.sp = s.regs.sp := by
+  simp [hdmaBlock, hdmaFold_sp]
+
+theorem hdmaHblank_sp (s : GBState) :
+    (hdmaHblank s).regs.sp = s.regs.sp := by
+  unfold hdmaHblank
+  dsimp only
+  split
+  · rfl
+  · simp [hdmaBlock_sp]
+
+/-- HDMA steps never touch HRAM. -/
+theorem hdmaCopyStep_hram (src dst : Nat) (st : GBState) (i : Nat) :
+    (hdmaCopyStep src dst st i).hram = st.hram := rfl
+
+theorem hdmaFold_hram (l : List Nat) (src dst : Nat) (st : GBState) :
+    (l.foldl (hdmaCopyStep src dst) st).hram = st.hram := by
+  induction l generalizing st with
+  | nil => rfl
+  | cons _ _ ih => simp only [List.foldl_cons, ih, hdmaCopyStep_hram]
+
+theorem hdmaBlock_hram (s : GBState) (src dst : Nat) :
+    (hdmaBlock s src dst).hram = s.hram := by
+  simp [hdmaBlock, hdmaFold_hram]
+
+theorem hdmaHblank_hram (s : GBState) :
+    (hdmaHblank s).hram = s.hram := by
+  unfold hdmaHblank
+  dsimp only
+  split
+  · rfl
+  · simp [hdmaBlock_hram]
+
 /-- Scanline completion (HDMA + blit) preserves the cycle counter. -/
 theorem finishLine_cycles (s : GBState) (ppu : PpuState) :
     (finishLine s ppu).cycles = s.cycles := by
@@ -142,9 +186,27 @@ theorem finishLine_cycles (s : GBState) (ppu : PpuState) :
   · split <;> simp_all [hdmaHblank_cycles]
   · rfl
 
+/-- Scanline completion preserves the stack pointer. -/
+theorem finishLine_sp (s : GBState) (ppu : PpuState) :
+    (finishLine s ppu).regs.sp = s.regs.sp := by
+  unfold finishLine
+  dsimp only
+  split
+  · split <;> simp_all [hdmaHblank_sp]
+  · rfl
+
+/-- Scanline completion preserves HRAM. -/
+theorem finishLine_hram (s : GBState) (ppu : PpuState) :
+    (finishLine s ppu).hram = s.hram := by
+  unfold finishLine
+  dsimp only
+  split
+  · split <;> simp_all [hdmaHblank_hram]
+  · rfl
+
 /-- Cycle accounting is exact: stepping adds precisely `m` M-cycles.
     (The key composition lemma for any future fuel-sufficiency or
-    timing proof; `exec`'s per-arm lower bound remains open.) -/
+    timing proof; pair with `exec_cycles_pos` below.) -/
 theorem advance_adds (s : GBState) (m : Nat) :
     (advance s m).cycles = s.cycles + m := by
   unfold advance
@@ -152,5 +214,30 @@ theorem advance_adds (s : GBState) (m : Nat) :
   split
   all_goals split
   all_goals simp_all [finishLine_cycles]
+
+/-- Push `.2` through `ite` so `split` can see branch costs.
+    (Unlike general `apply_ite`, this fires only on `Prod.snd` and so
+    cannot ping-pong with the `exec` equation lemmas.) -/
+theorem snd_ite (c : Prop) [Decidable c] (a b : GBState × Nat) :
+    (if c then a else b).2 = if c then a.2 else b.2 := by
+  by_cases h : c <;> simp [h]
+
+/-- Every instruction costs at least one M-cycle: the per-arm lower
+    bound behind any fuel-sufficiency argument (`runUntilCycles` relies
+    on `cycles` strictly increasing). Uniform automation: plain arms
+    reduce to a literal or `base + sub-cost` (`omega`); `ite` arms split
+    open; the four `Option`-payload arms (`Jr`/`Jp`/`Call`/`Ret`) first
+    case their payload so the right equation lemma fires; `Halt`'s
+    `match` on the pending interrupt is cased by term. -/
+theorem exec_cycles_pos (s : GBState) (i : Instr) (pc : UInt16) :
+    1 ≤ (exec s i pc).2 := by
+  cases i <;> simp only [exec, snd_ite] <;> (try dsimp only) <;>
+    first
+    | omega
+    | (cases ‹Option Cond› <;> (try simp only [snd_ite]) <;> (try dsimp only) <;>
+        first | omega | (split <;> first | omega | (split <;> omega)))
+    | (split <;> first | omega | (split <;> first | omega | (split <;> omega)))
+    | (cases h : irqPending s.ie s.if_ <;> (try simp only [h, snd_ite]) <;> (try dsimp only) <;>
+        first | omega | (split <;> first | omega | (split <;> omega)))
 
 end GB

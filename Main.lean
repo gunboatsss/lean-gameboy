@@ -226,7 +226,7 @@ def debugState (s : GBState) : IO Unit := do
     IO.println s!"[dbg] @PC: {op.toNat} {(busRead s (r.pc + 1)).toNat} {(busRead s (r.pc + 2)).toNat} → {repr (Instr.decodeFull op)}"
   -- PC samples over the next 500 instructions (spin vs wander)
   let rec loop : GBState → Nat → List Nat → List Nat
-    | st, 0, acc => acc.reverse
+    | _, 0, acc => acc.reverse
     | st, k + 1, acc =>
       let st := stepCPU st
       loop st k (if k % 50 == 0 then st.regs.pc.toNat :: acc else acc)

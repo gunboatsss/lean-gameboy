@@ -199,20 +199,24 @@ def noisePeriod (c : NoiseCh) : Nat :=
     | 0 => 8 | 1 => 16 | 2 => 32 | 3 => 48 | 4 => 64 | 5 => 80 | 6 => 96 | _ => 112
   div * (1 <<< c.shift)
 
+/-- LFSR stepping loop, hoisted to top level for induction:
+    `period`/`width` used to be captured from `c` (identical body). -/
+def noiseStepLoop (period : Nat) (width : Bool) : Nat → Nat → Nat → Nat × Nat
+  | 0, timer, lfsr => (timer, lfsr)
+  | k + 1, timer, lfsr =>
+    if timer <= 1 then
+      let bit := ((lfsr % 2) ^^^ ((lfsr / 2) % 2)) % 2
+      let l := (lfsr / 2) ||| (bit * 0x4000)
+      let l' := if width then (l &&& 0xFFBF) ||| (bit * 0x40) else l
+      noiseStepLoop period width k period (l' % 0x8000)
+    else noiseStepLoop period width k (timer - 1) lfsr
+
 def advance (c : NoiseCh) (t : Nat) : NoiseCh :=
   if !c.enable then c
   else
-    let rec loop : Nat → Nat → Nat → Nat × Nat
-      | 0, timer, lfsr => (timer, lfsr)
-      | k + 1, timer, lfsr =>
-        if timer <= 1 then
-          let bit := ((lfsr % 2) ^^^ ((lfsr / 2) % 2)) % 2
-          let l := (lfsr / 2) ||| (bit * 0x4000)
-          let l' := if c.width then (l &&& 0xFFBF) ||| (bit * 0x40) else l
-          loop k (noisePeriod c) (l' % 0x8000)
-        else loop k (timer - 1) lfsr
     let p := noisePeriod c
-    let (timer', lfsr') := loop t (if c.timer == 0 then p else c.timer) c.lfsr
+    let (timer', lfsr') :=
+      noiseStepLoop p c.width t (if c.timer == 0 then p else c.timer) c.lfsr
     { c with timer := timer', lfsr := lfsr' }
 
 def output (c : NoiseCh) : Nat :=

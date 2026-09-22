@@ -7,11 +7,10 @@
   (the repeated byte is re-read as the operand); bugged fall-through
   advances `len - 1`. Together these are exactly the mechanism the
   `double-halt-cancel` test ROM validates empirically
-  (`FATE: RST $38`, inhibited return address).
-
-  NOTE (open): `RST` pushing the inhibited address needs an HRAM
-  write/read roundtrip through `ByteArray` externals plus
-  cross-address non-interference — deferred; covered empirically.
+  (`FATE: RST $38`, inhibited return address). The push side is closed
+  in `Proofs/Stack.lean`: `serviceIrq_pushes_pc` retrieves exactly the
+  inhibited PC from an HRAM stack, and `exec_rst_pushes` pins the
+  `RST`-instruction push (bug-armed: `pc + len - 1`).
 -/
 import LeanGameboy.Bus
 

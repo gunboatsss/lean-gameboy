@@ -68,12 +68,15 @@ cycle preservation (`Bus`), timer edge
 cases + IRQ acknowledgement (`Timer`), PPU modes, palette bounds,
 interrupt priority (`Ppu`), APU phase-step frame preservation (`Apu`),
 halt-bug spin/arming/immediates (`Halt`),
-sprite attribute decoding (`Sprite`). Bounded reachability: a 132k-instruction
+sprite attribute decoding (`Sprite`), per-instruction cycle lower
+bound over all 60 `exec` arms (`Bus.exec_cycles_pos`), DAA spec
+refinement + flag contracts (`Spec`), AF codec roundtrips (`Regs`).
+Bounded reachability: a 132k-instruction
 scripted run is proven to reach its target state via `native_decide`
 (`Reach` — kernel `decide` cannot scale there; full-game traces are
-provably out of reach, see that file). Open goals for later:
-per-instruction cycle lower bounds (60-arm automation) and channel
-phase-additivity (div/mod composition).
+provably out of reach, see that file). Channel phase-additivity holds
+for all channels (`Apu`: pulse/wave bulk steps plus the noise LFSR
+loop, whose `let rec` was hoisted for induction).
 
 Verified where it counts: the kernel-checked proof suite above
 plus a headless end-to-end suite
