@@ -16,6 +16,9 @@
 #define FB_W 160
 #define FB_H 144
 
+/* forward: defined below, reused by agb_close */
+lean_obj_res gb_close(lean_obj_arg w);
+
 /* ---------------- dynamic SDL binding ---------------- */
 
 static void *sdl_handle = NULL;
@@ -107,6 +110,8 @@ static int g_quit = 0;
 #define SC_UP 82
 #define SC_RSHIFT 229
 #define SC_F1 58
+#define SC_Q 20
+#define SC_W 26
 
 /* ---------------- Lean entry points ---------------- */
 
@@ -181,6 +186,131 @@ lean_obj_res gb_blit32(b_lean_obj_arg arr, lean_obj_arg w) {
     return lean_io_result_mk_ok(lean_box(0));
 }
 
+/* ---- Game Boy Advance 240x160 path (separate window state) ---- */
+
+#define AGB_W 240
+#define AGB_H 160
+
+static void *a_win = NULL;
+static void *a_ren = NULL;
+static void *a_tex = NULL;
+static uint32_t *a_pxbuf = NULL;
+static uint32_t a_audio = 0;
+
+/* agb_open : UInt32 (scale) -> IO UInt32; same codes as gb_open */
+lean_obj_res agb_open(uint32_t scale, lean_obj_arg _w) {
+    (void)_w;
+    sdl_load();
+    if (!sdl_ok || !sdl_handle) return lean_io_result_mk_ok(lean_box_uint32(1));
+    if (a_win) return lean_io_result_mk_ok(lean_box_uint32(0));
+    if (scale < 1) scale = 1;
+    if (scale > 8) scale = 8;
+    if (p_Init(0x30) != 0) return lean_io_result_mk_ok(lean_box_uint32(2));
+    a_win = p_CreateWindow("lean-agb", 0x2FFF0000 /* centered */,
+                           0x2FFF0000, AGB_W * (int)scale, AGB_H * (int)scale, 0);
+    if (!a_win) return lean_io_result_mk_ok(lean_box_uint32(3));
+    a_ren = p_CreateRenderer(a_win, -1, 0);
+    if (!a_ren) return lean_io_result_mk_ok(lean_box_uint32(4));
+    a_tex = p_CreateTexture(a_ren, 0x16362004 /* ARGB8888 */, 1, AGB_W, AGB_H);
+    if (!a_tex) return lean_io_result_mk_ok(lean_box_uint32(5));
+    /* audio: GBA-native 32768 Hz, AUDIO_S16SYS (0x8010), stereo.
+       4096-sample device buffer (~125 ms): scheduling jitter on a
+       loaded host underruns smaller buffers faster than the emu can
+       refill, which is heard as crackle; the cost is ~125 ms audio
+       latency (standard emulator tradeoff). Failure is non-fatal
+       (pushes become no-ops). */
+    struct {
+        int freq; uint16_t format; uint8_t channels; uint8_t silence;
+        uint16_t samples; uint16_t padding; uint32_t size;
+        void (*callback)(void); void *userdata;
+    } want, have;
+    memset(&want, 0, sizeof(want));
+    memset(&have, 0, sizeof(have));
+    want.freq = 32768;
+    want.format = 0x8010;
+    want.channels = 2;
+    want.samples = 4096;
+    a_audio = p_OpenAudioDevice(NULL, 0, &want, &have, 0);
+    if (a_audio) p_PauseAudioDevice(a_audio, 0);
+    return lean_io_result_mk_ok(lean_box_uint32(0));
+}
+
+/* agb_blit32 : Array UInt32 (240x160 ARGB8888) -> IO Unit */
+lean_obj_res agb_blit32(b_lean_obj_arg arr, lean_obj_arg w) {
+    (void)w;
+    if (a_tex && arr) {
+        size_t n = lean_array_size(arr);
+        if (n >= (size_t)(AGB_W * AGB_H)) {
+            if (!a_pxbuf) {
+                a_pxbuf = (uint32_t *)malloc(sizeof(uint32_t) * AGB_W * AGB_H);
+                if (!a_pxbuf) return lean_io_result_mk_ok(lean_box(0));
+            }
+            lean_object **objs = lean_array_cptr(arr);
+            for (size_t i = 0; i < (size_t)(AGB_W * AGB_H); i++)
+                a_pxbuf[i] = lean_unbox_uint32(objs[i]);
+            p_UpdateTexture(a_tex, NULL, a_pxbuf, AGB_W * 4);
+        }
+    }
+    return lean_io_result_mk_ok(lean_box(0));
+}
+
+/* agb_present : IO Unit */
+lean_obj_res agb_present(lean_obj_arg w) {
+    if (a_ren && a_tex) {
+        p_RenderClear(a_ren);
+        p_RenderCopy(a_ren, a_tex, NULL, NULL);
+        p_RenderPresent(a_ren);
+    }
+    return lean_io_result_mk_ok(lean_box(0));
+}
+
+/* agb_audio : ByteArray (S16LE stereo) -> IO Unit */
+lean_obj_res agb_audio(b_lean_obj_arg samples, lean_obj_arg w) {
+    (void)w;
+    if (a_audio && samples) {
+        size_t n = lean_sarray_size(samples);
+        /* cap queued audio at ~200ms (32768 Hz stereo); trim the frame
+           instead of dropping it, mirroring gb_audio. Sized to absorb
+           frame-cost variance (fast title frames vs dense scenes swing
+           the queue ±26KB; a 100ms cap discarded the cushion that slow
+           frames need, starving the device). Worst-case added latency
+           after a stall is bounded by the cap. */
+        uint32_t queued = p_GetQueuedAudioSize(a_audio);
+        uint32_t cap = 32768 / 5 * 4;
+        if (queued < cap && n > 0) {
+            uint32_t room = cap - queued;
+            uint32_t m = n < room ? (uint32_t)n : room;
+            m &= ~3u; /* keep stereo-frame alignment */
+            if (m > 0) {
+                p_QueueAudio(a_audio,
+                             (const void *)lean_sarray_cptr(samples),
+                             m);
+            }
+        }
+    }
+    return lean_io_result_mk_ok(lean_box(0));
+}
+
+/* agb_queued : IO UInt32 (queued-but-unplayed bytes, 0 w/o device). */
+lean_obj_res agb_queued(lean_obj_arg w) {
+    (void)w;
+    uint32_t q = 0;
+    if (a_audio) {
+        q = p_GetQueuedAudioSize(a_audio);
+    }
+    return lean_io_result_mk_ok(lean_box_uint32(q));
+}
+
+/* agb_close : IO Unit (also releases the DMG window if open) */
+lean_obj_res agb_close(lean_obj_arg w) {
+    if (a_tex) { p_DestroyTexture(a_tex); a_tex = NULL; }
+    if (a_ren) { p_DestroyRenderer(a_ren); a_ren = NULL; }
+    if (a_win) { p_DestroyWindow(a_win); a_win = NULL; }
+    if (a_audio) { p_CloseAudioDevice(a_audio); a_audio = 0; }
+    if (a_pxbuf) { free(a_pxbuf); a_pxbuf = NULL; }
+    return gb_close(w);
+}
+
 /* present : IO Unit */
 lean_obj_res gb_present(lean_obj_arg w) {
     if (g_ren && g_tex) {
@@ -192,7 +322,8 @@ lean_obj_res gb_present(lean_obj_arg w) {
 }
 
 /* poll : IO UInt32 — low 8 bits = buttons (R L U D A B Sel Sta),
- * bit 8 = quit requested, bit 9 = F1 (dump snapshot) requested. */
+ * bit 8 = quit requested, bit 9 = F1 (dump snapshot) requested,
+ * bit 10 = L (Q key), bit 11 = R (W key) for GBA shoulders. */
 lean_obj_res gb_poll(lean_obj_arg w) {
     uint32_t out = 0;
     if (!sdl_ok) return lean_io_result_mk_ok(lean_box_uint32(out));
@@ -213,6 +344,8 @@ lean_obj_res gb_poll(lean_obj_arg w) {
         if (st[SC_RSHIFT] || st[SC_BACKSPACE]) out |= 0x40;
         if (st[SC_ENTER]) out |= 0x80;
         if (nkeys > SC_F1 && st[SC_F1]) out |= 0x200;
+        if (nkeys > SC_W && st[SC_Q]) out |= 0x400;
+        if (nkeys > SC_W && st[SC_W]) out |= 0x800;
     }
     if (g_quit) out |= 0x100;
     return lean_io_result_mk_ok(lean_box_uint32(out));

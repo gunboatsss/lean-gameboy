@@ -117,6 +117,31 @@ lake build gb-test && ./.lake/build/bin/gb-test
 
 Battery saves load/store automatically as `<rom>.sav`.
 
+## GBA (`lean-agb`)
+
+Direct-boot by default (HLE BIOS). Pass `--bios gba_bios.bin` for a
+reset-vector boot through the real BIOS (required for TAS movies
+recorded with `SkipBios = false`):
+
+```sh
+# boot + replay a BizHawk TAS to the end (default --frames runs the
+# whole movie: 7097 frames here, deterministic framebuffer + WAV).
+# TAS movies assume power-on SRAM: remove any existing `<rom>.sav`
+# first, otherwise in-game save data diverges the replay.
+./.lake/build/bin/lean-agb "Kirby & The Amazing Mirror (USA).gba" \
+  --headless --bios gba_bios.bin \
+  --tas "Kirby & the Amazing Mirror (USA).tasproj" \
+  --dump tas.ppm --dump-wav tas.wav
+
+# cap the replay at N frames (or pad a short movie with released input)
+./.lake/build/bin/lean-agb game.gba --headless --bios gba_bios.bin \
+  --tas movie.tasproj --frames 1200 --dump frame.ppm
+
+# debug a boot/replay hang: regs, timers, DMA, APU, PC samples
+./.lake/build/bin/lean-agb game.gba --headless --cycles 100000000 \
+  --bios gba_bios.bin --debug
+```
+
 ## Layout
 
 - `LeanGameboy/Basic.lean` — bit/byte helpers
@@ -155,4 +180,24 @@ Battery saves load/store automatically as `<rom>.sav`.
   `Array Int` made GC marking scale with buffer size), O(1) channel
   phase math, exact divider-edge timer counting, allocation-free
   scanline loops.
-  See `Tests/Bench.lean` (`gb-bench`) for the subsystem breakdown.
+   See `Tests/Bench.lean` (`gb-bench`) for the subsystem breakdown.
+
+## Acknowledgements
+
+- [Pan Docs](https://gbdev.io/pandocs/) — the Game Boy hardware
+  reference: CPU clock (4194304 Hz), frame timing (70224 dots), APU
+  channels/mixer registers (`NR50`/`NR51`), duty patterns, wave/noise
+  behavior, and the output capacitor behind the DC blocker. Used when
+  diagnosing and fixing the audio crackling (exact sample clock,
+  DC-free mixer, fractional frame pacing).
+- [SDL2 wiki](https://wiki.libsdl.org/SDL2/CategoryAudio) — the
+  queued-audio API (`SDL_OpenAudioDevice`, `SDL_QueueAudio`,
+  `SDL_GetQueuedAudioSize`) behind `c/shim.c`.
+- [Pan Docs](https://gbdev.io/pandocs/) (Interrupts / HALT section) —
+  the HALT bug model in `LeanGameboy/Bus.lean` (`haltBug` arming,
+  bugged-immediate shift, `len - 1` advance) and the double-`HALT`
+  spin (`Proofs/Halt.lean`, `Proofs/Stack.lean`).
+- nitro2k01's `double-halt-cancel` test ROM (from
+  [little-things-gb](https://github.com/nitro2k01/little-things-gb)) —
+  validates the double-`HALT` spin empirically (inhibited IRQ return
+  address, VRAM-inaccessible fetch, DIV timing).

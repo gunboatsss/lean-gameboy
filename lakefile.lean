@@ -7,6 +7,9 @@ package lean_gameboy where
 lean_lib LeanGameboy where
   roots := #[`LeanGameboy]
 
+lean_lib LeanAGB where
+  roots := #[`LeanAGB]
+
 -- SDL shim as a native static lib. SDL2 itself is dlopen'd at runtime,
 -- so the build only needs a C compiler and lean headers (no SDL dev
 -- packages, no link-time -lSDL2).
@@ -27,7 +30,23 @@ lean_exe «lean-gameboy» where
 lean_exe «gb-test» where
   root := `Tests.Smoke
 
+lean_exe «agb-test» where
+  root := `Tests.AgbSmoke
+
+lean_exe «lean-agb» where
+  root := `MainAgb
+  moreLinkArgs := #["-ldl"]
+  moreLinkObjs := #[libgbsdl]
+
 lean_exe «gb-bench» where
   root := `Tests.Bench
   moreLinkArgs := #["-ldl"]
   moreLinkObjs := #[libgbsdl]
+
+lean_exe «agb-bench» where
+  root := `Tests.AgbBench
+  moreLinkArgs := #["-ldl"]
+  moreLinkObjs := #[libgbsdl]
+
+lean_exe «agb-synth» where
+  root := `Tests.Synth
