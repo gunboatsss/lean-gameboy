@@ -467,13 +467,13 @@ def blendCfg (ppu : AgbPpu) : BlendCfg :=
     tgt2 := (bc >>> 8) &&& 0x3F }
 
 /-- Full Mode-0 pixel with color effects (GBATEK "Color Special Effects").
+    `obj` is the OAM-order first opaque sprite at this pixel (`objHit`).
     Target matching: top pixel must be a 1st target (semi OBJs always
     are), second-best a 2nd target; else the top pixel shows plain.
     Brightness applies when selected (semi falls back to it without an
     overlapping 2nd target). Window gating unmodeled: effects are global. -/
-def framePixelCfg (bc : BlendCfg) (ppu : AgbPpu) (palT : Array UInt32)
-    (vram : ByteArray) (sps : List AgbSprite) (spans : Array BgSpan)
-    (y x : Nat) : UInt32 :=
+def framePixelObj (bc : BlendCfg) (palT : Array UInt32) (vram : ByteArray)
+    (spans : Array BgSpan) (x : Nat) (obj : Option Cand) : UInt32 :=
   let back := palT.getD 0 0xFFFFFFFF
   let bd : Cand := { prio := 4, ord := 6, layer := 5, color := back }
   -- Same candidate SET as `bgHits ++ obj.toList ++ [bd]` (each layer
@@ -482,7 +482,7 @@ def framePixelCfg (bc : BlendCfg) (ppu : AgbPpu) (palT : Array UInt32)
   let acc := bgInsert (spans.getD 1 {}) palT vram x 1 acc
   let acc := bgInsert (spans.getD 2 {}) palT vram x 2 acc
   let acc := bgInsert (spans.getD 3 {}) palT vram x 3 acc
-  let acc := optInsert acc (objHit ppu palT vram sps y x)
+  let acc := optInsert acc obj
   let (top, second) := topTwoInsert acc bd
   match top with
   | none => back
@@ -502,22 +502,60 @@ def framePixelCfg (bc : BlendCfg) (ppu : AgbPpu) (palT : Array UInt32)
       else t.color
     else t.color
 
+/-- `framePixelObj` with the sprite hit computed on the spot. -/
+def framePixelCfg (bc : BlendCfg) (ppu : AgbPpu) (palT : Array UInt32)
+    (vram : ByteArray) (sps : List AgbSprite) (spans : Array BgSpan)
+    (y x : Nat) : UInt32 :=
+  framePixelObj bc palT vram spans x (objHit ppu palT vram sps y x)
+
 /-- `framePixel` with on-the-fly blend setup (proof/test entry point;
-    the hot loop calls `framePixelCfg` with a per-line `blendCfg`). -/
+    the hot loop uses a per-line sprite buffer). -/
 def framePixel (ppu : AgbPpu) (palT : Array UInt32) (vram : ByteArray)
     (sps : List AgbSprite) (spans : Array BgSpan) (y x : Nat) : UInt32 :=
   framePixelCfg (blendCfg ppu) ppu palT vram sps spans y x
 
-/-- Pixel loop over one scanline with a pre-parsed sprite list,
-    precomputed BG spans and blend setup. -/
-def mode0LineLoopCfg (bc : BlendCfg) (ppu : AgbPpu) (palT : Array UInt32)
-    (vram : ByteArray) (sps : List AgbSprite) (spans : Array BgSpan)
+/-- Paint one sprite's opaque pixels into a scanline buffer. Earlier
+    OAM entries already stored stay (same first-hit rule as `objHit`). -/
+def paintObjSpan (sp : AgbSprite) (oneD : Bool) (palT : Array UInt32)
+    (vram : ByteArray) (y : Nat) (row : Array (Option Cand)) (x : Nat) :
+    Nat → Array (Option Cand)
+  | 0 => row
+  | n + 1 =>
+    let row :=
+      if x >= agbWidth || (row.getD x none).isSome then row
+      else
+        match spritePixel sp oneD palT vram (x : Int) (y : Int) with
+        | none => row
+        | some c =>
+          row.set! x (some { prio := sp.prio, ord := 0, layer := 4,
+                             color := c, semi := sp.semi })
+    paintObjSpan sp oneD palT vram y row (x + 1) n
+
+/-- One scanline of sprites, painted once. Each pixel used to walk the
+    whole list (240 times per line). -/
+def objLine (oneD : Bool) (palT : Array UInt32) (vram : ByteArray)
+    (sps : List AgbSprite) (y : Nat) : Array (Option Cand) :=
+  let rec go (sps : List AgbSprite) (row : Array (Option Cand)) :
+      Array (Option Cand) :=
+    match sps with
+    | [] => row
+    | sp :: rest =>
+      let x0 := if sp.x <= 0 then 0 else min agbWidth sp.x.toNat
+      let right := sp.x + (sp.w : Int)
+      let x1 := if right <= 0 then 0 else min agbWidth right.toNat
+      go rest (paintObjSpan sp oneD palT vram y row x0 (x1 - x0))
+  go sps (Array.replicate agbWidth (none : Option Cand))
+
+/-- Pixel loop over one scanline. `objs` is the pre-painted sprite row. -/
+def mode0LineLoopCfg (bc : BlendCfg) (palT : Array UInt32)
+    (vram : ByteArray) (objs : Array (Option Cand)) (spans : Array BgSpan)
     (y : Nat) (fb : Array UInt32) : Nat → Array UInt32
   | 0 => fb
   | fuel + 1 =>
     let x := agbWidth - (fuel + 1)
-    mode0LineLoopCfg bc ppu palT vram sps spans y
-      (agbPlot fb x y (framePixelCfg bc ppu palT vram sps spans y x)) fuel
+    mode0LineLoopCfg bc palT vram objs spans y
+      (agbPlot fb x y (framePixelObj bc palT vram spans x (objs.getD x none)))
+      fuel
 
 /-- Pixel loop over one scanline with a pre-parsed sprite list and
     precomputed BG spans. -/
@@ -536,7 +574,12 @@ def mode0LineLoop (ppu : AgbPpu) (palT : Array UInt32) (vram : ByteArray)
 def mode0BlitLine (ppu : AgbPpu) (palT : Array UInt32) (vram : ByteArray)
     (parsed : Array (Option AgbSprite)) (y : Nat)
     (fb : Array UInt32) (fuel : Nat) : Array UInt32 :=
-  mode0LineLoopCfg (blendCfg ppu) ppu palT vram (spritesOnLineParsed parsed y)
+  let sps := spritesOnLineParsed parsed y
+  let oneD := ((ppu.dispcnt.toNat >>> 6) &&& 1) == 1
+  let objs :=
+    if ((ppu.dispcnt.toNat >>> 12) &&& 1) == 0 then Array.replicate agbWidth (none : Option Cand)
+    else objLine oneD palT vram sps y
+  mode0LineLoopCfg (blendCfg ppu) palT vram objs
     #[bgSpan ppu 0 y, bgSpan ppu 1 y, bgSpan ppu 2 y, bgSpan ppu 3 y] y fb fuel
 
 /-- Render `lines` mode-0 scanlines (top-down) over the framebuffer

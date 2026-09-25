@@ -201,7 +201,7 @@ def memRead8 (s : AGBState) (addr : UInt32) : UInt8 :=
   else if 0x07000000 <= a && a < 0x08000000 then
     bget s.oam (mirrorIdx 0x07000000 0x400 a)
   else if 0x08000000 <= a && a < 0x0E000000 then
-    if (s.save.kind == .eeprom4k || s.save.kind == .eeprom64k) && 0x0D000000 <= a then
+    if 0x0D000000 <= a && (s.save.kind == .eeprom4k || s.save.kind == .eeprom64k) then
       -- EEPROM window peek for non-instruction paths (fetch/DMA/BIOS);
       -- game loads use memRead*E which clock the protocol.
       openBus8 s.busVal a
@@ -216,11 +216,26 @@ def memRead16 (s : AGBState) (addr : UInt32) : UInt16 :=
   (hi <<< 8) ||| lo
 
 def memRead32 (s : AGBState) (addr : UInt32) : UInt32 :=
-  let b0 := (memRead8 s addr).toUInt32
-  let b1 := (memRead8 s (addr + 1)).toUInt32
-  let b2 := (memRead8 s (addr + 2)).toUInt32
-  let b3 := (memRead8 s (addr + 3)).toUInt32
-  b0 ||| (b1 <<< 8) ||| (b2 <<< 16) ||| (b3 <<< 24)
+  let a := addr.toNat
+  if (a &&& 3) == 0 && 0x02000000 <= a && a + 3 < 0x03000000 then
+    bget32LE s.ewram ((a - 0x02000000) % 0x40000)
+  else if (a &&& 3) == 0 && 0x03000000 <= a && a + 3 < 0x04000000 then
+    bget32LE s.iwram ((a - 0x03000000) % 0x8000)
+  else if (a &&& 3) == 0 && 0x08000000 <= a && a < 0x0D000000 && s.rom.size != 0 then
+    let off := (a - 0x08000000) % s.rom.size
+    if off + 3 < s.rom.size then bget32LE s.rom off
+    else
+      let b0 := (memRead8 s addr).toUInt32
+      let b1 := (memRead8 s (addr + 1)).toUInt32
+      let b2 := (memRead8 s (addr + 2)).toUInt32
+      let b3 := (memRead8 s (addr + 3)).toUInt32
+      b0 ||| (b1 <<< 8) ||| (b2 <<< 16) ||| (b3 <<< 24)
+  else
+    let b0 := (memRead8 s addr).toUInt32
+    let b1 := (memRead8 s (addr + 1)).toUInt32
+    let b2 := (memRead8 s (addr + 2)).toUInt32
+    let b3 := (memRead8 s (addr + 3)).toUInt32
+    b0 ||| (b1 <<< 8) ||| (b2 <<< 16) ||| (b3 <<< 24)
 
 -- ── Serial-window reads (Phase 6: EEPROM) ──
 -- Game LDR-family loads use these stateful versions so the EEPROM bit
@@ -435,20 +450,58 @@ def dmaWrite8IO (s : AGBState) (a : Nat) (v : UInt8) : AGBState :=
       let lane := a - (a % 2)
       syncIo16 s lane (bget16LE s.io (lane - 0x04000000))
 
+/-- Hand the array to `f` with no other owner, then store it back.
+    `{ s with ewram := bset s.ewram i v }` keeps `s` alive across the
+    write, so `set!` copies the whole buffer (EWRAM is 256KB). -/
+@[inline] def withEwram (s : AGBState) (f : ByteArray → ByteArray) : AGBState :=
+  let b := s.ewram
+  let s := { s with ewram := ByteArray.empty }
+  { s with ewram := f b }
+
+@[inline] def withIwram (s : AGBState) (f : ByteArray → ByteArray) : AGBState :=
+  let b := s.iwram
+  let s := { s with iwram := ByteArray.empty }
+  { s with iwram := f b }
+
+@[inline] def withPal (s : AGBState) (f : ByteArray → ByteArray) : AGBState :=
+  let b := s.pal
+  let s := { s with pal := ByteArray.empty }
+  { s with pal := f b }
+
+@[inline] def withVram (s : AGBState) (f : ByteArray → ByteArray) : AGBState :=
+  let b := s.vram
+  let s := { s with vram := ByteArray.empty }
+  { s with vram := f b }
+
+@[inline] def withOam (s : AGBState) (f : ByteArray → ByteArray) : AGBState :=
+  let b := s.oam
+  let s := { s with oam := ByteArray.empty }
+  { s with oam := f b }
+
 /-- DMA byte write by raw address (worker: no `let`, so `split` sees
     the dispatch chain directly). -/
 def dmaWrite8Nat (s : AGBState) (a : Nat) (v : UInt8) : AGBState :=
   if 0x02000000 <= a && a < 0x03000000 then
-    { s with ewram := bset s.ewram (mirrorIdx 0x02000000 0x40000 a) v }
+    let b := s.ewram
+    let s := { s with ewram := ByteArray.empty }
+    { s with ewram := bset b (mirrorIdx 0x02000000 0x40000 a) v }
   else if 0x03000000 <= a && a < 0x04000000 then
-    { s with iwram := bset s.iwram (mirrorIdx 0x03000000 0x8000 a) v }
+    let b := s.iwram
+    let s := { s with iwram := ByteArray.empty }
+    { s with iwram := bset b (mirrorIdx 0x03000000 0x8000 a) v }
   else if 0x04000000 <= a && a < 0x05000000 then dmaWrite8IO s a v
   else if 0x05000000 <= a && a < 0x06000000 then
-    { s with pal := bset s.pal (mirrorIdx 0x05000000 0x400 a) v }
+    let b := s.pal
+    let s := { s with pal := ByteArray.empty }
+    { s with pal := bset b (mirrorIdx 0x05000000 0x400 a) v }
   else if 0x06000000 <= a && a < 0x07000000 then
-    { s with vram := bset s.vram (vramIdx a) v }
+    let b := s.vram
+    let s := { s with vram := ByteArray.empty }
+    { s with vram := bset b (vramIdx a) v }
   else if 0x07000000 <= a && a < 0x08000000 then
-    { s with oam := bset s.oam (mirrorIdx 0x07000000 0x400 a) v }
+    let b := s.oam
+    let s := { s with oam := ByteArray.empty }
+    { s with oam := bset b (mirrorIdx 0x07000000 0x400 a) v }
   else if 0x0E000000 <= a && a < 0x10000000 then
     saveWrite8 s ((a - 0x0E000000) % 0x10000) v
   else s
@@ -529,20 +582,20 @@ def dmaBulk (s : AGBState) (src dst : UInt32) (total : Nat) : Option AGBState :=
   match dmaLinSrc s src.toNat total, dmaLinDst dst.toNat total with
   | some (.ew, sarr, soff), some (.ew, doff) =>
     if rangesOverlap soff doff total then none
-    else some { s with ewram := sarr.copySlice soff s.ewram doff total }
+    else some (withEwram s (fun d => sarr.copySlice soff d doff total))
   | some (.iw, sarr, soff), some (.iw, doff) =>
     if rangesOverlap soff doff total then none
-    else some { s with iwram := sarr.copySlice soff s.iwram doff total }
+    else some (withIwram s (fun d => sarr.copySlice soff d doff total))
   | some (_, sarr, soff), some (.ew, doff) =>
-    some { s with ewram := sarr.copySlice soff s.ewram doff total }
+    some (withEwram s (fun d => sarr.copySlice soff d doff total))
   | some (_, sarr, soff), some (.iw, doff) =>
-    some { s with iwram := sarr.copySlice soff s.iwram doff total }
+    some (withIwram s (fun d => sarr.copySlice soff d doff total))
   | some (_, sarr, soff), some (.pal, doff) =>
-    some { s with pal := sarr.copySlice soff s.pal doff total }
+    some (withPal s (fun d => sarr.copySlice soff d doff total))
   | some (_, sarr, soff), some (.vram, doff) =>
-    some { s with vram := sarr.copySlice soff s.vram doff total }
+    some (withVram s (fun d => sarr.copySlice soff d doff total))
   | some (_, sarr, soff), some (.oam, doff) =>
-    some { s with oam := sarr.copySlice soff s.oam doff total }
+    some (withOam s (fun d => sarr.copySlice soff d doff total))
   | _, _ => none
 
 /-- Copy dispatch: bulk slice when increment-increment over linear
@@ -687,20 +740,30 @@ def memWrite8IO (s : AGBState) (a : Nat) (v : UInt8) : AGBState :=
     the dispatch chain directly; `memWrite8` coerces at the boundary). -/
 def memWrite8Nat (s : AGBState) (a : Nat) (v : UInt8) : AGBState :=
   if 0x02000000 <= a && a < 0x03000000 then
-    { s with ewram := bset s.ewram (mirrorIdx 0x02000000 0x40000 a) v }
+    let b := s.ewram
+    let s := { s with ewram := ByteArray.empty }
+    { s with ewram := bset b (mirrorIdx 0x02000000 0x40000 a) v }
   else if 0x03000000 <= a && a < 0x04000000 then
-    { s with iwram := bset s.iwram (mirrorIdx 0x03000000 0x8000 a) v }
+    let b := s.iwram
+    let s := { s with iwram := ByteArray.empty }
+    { s with iwram := bset b (mirrorIdx 0x03000000 0x8000 a) v }
   else if 0x04000000 <= a && a < 0x05000000 then memWrite8IO s a v
   else if 0x05000000 <= a && a < 0x06000000 then
-    { s with pal := bset s.pal (mirrorIdx 0x05000000 0x400 a) v }
+    let b := s.pal
+    let s := { s with pal := ByteArray.empty }
+    { s with pal := bset b (mirrorIdx 0x05000000 0x400 a) v }
   else if 0x06000000 <= a && a < 0x07000000 then
-    { s with vram := bset s.vram (vramIdx a) v }
+    let b := s.vram
+    let s := { s with vram := ByteArray.empty }
+    { s with vram := bset b (vramIdx a) v }
   else if 0x07000000 <= a && a < 0x08000000 then
-    { s with oam := bset s.oam (mirrorIdx 0x07000000 0x400 a) v }
+    let b := s.oam
+    let s := { s with oam := ByteArray.empty }
+    { s with oam := bset b (mirrorIdx 0x07000000 0x400 a) v }
   else if 0x0E000000 <= a && a < 0x10000000 then
     saveWrite8 s ((a - 0x0E000000) % 0x10000) v
-  else if (s.save.kind == .eeprom4k || s.save.kind == .eeprom64k)
-      && 0x0D000000 <= a && a < 0x0E000000 then
+  else if 0x0D000000 <= a && a < 0x0E000000
+      && (s.save.kind == .eeprom4k || s.save.kind == .eeprom64k) then
     -- EEPROM serial window: one bit (D0) per bus access.
     { s with save := { s.save with
       eeprom := eepromWriteBit s.save.eeprom ((v.toNat &&& 1) == 1) } }
@@ -786,7 +849,24 @@ def memWrite16 (s : AGBState) (addr : UInt32) (v : UInt16) : AGBState :=
     memWrite8 (memWrite8 s addr v.toUInt8) (addr + 1) (v >>> 8).toUInt8
 
 def memWrite32 (s : AGBState) (addr : UInt32) (v : UInt32) : AGBState :=
-  memWrite16 (memWrite16 s addr v.toUInt16) (addr + 2) (v >>> 16).toUInt16
+  let a := addr.toNat
+  if (a &&& 3) == 0 && 0x02000000 <= a && a + 3 < 0x03000000 then
+    let b := s.ewram
+    let s := { s with ewram := ByteArray.empty }
+    { s with ewram := bset32LE b ((a - 0x02000000) % 0x40000) v }
+  else if (a &&& 3) == 0 && 0x03000000 <= a && a + 3 < 0x04000000 then
+    let b := s.iwram
+    let s := { s with iwram := ByteArray.empty }
+    { s with iwram := bset32LE b ((a - 0x03000000) % 0x8000) v }
+  else if (a &&& 3) == 0 && 0x06000000 <= a && a + 3 < 0x07000000 then
+    let b := s.vram
+    let s := { s with vram := ByteArray.empty }
+    let b := bset b (vramIdx a) v.toUInt8
+    let b := bset b (vramIdx (a + 1)) (v >>> 8).toUInt8
+    let b := bset b (vramIdx (a + 2)) (v >>> 16).toUInt8
+    { s with vram := bset b (vramIdx (a + 3)) (v >>> 24).toUInt8 }
+  else
+    memWrite16 (memWrite16 s addr v.toUInt16) (addr + 2) (v >>> 16).toUInt16
 
 -- ── Waitstates (GBATEK access-time table; WAITCNT-driven GamePak) ──
 -- Access = 1 + waitstates. Prefetch buffer (WAITCNT.14), 128K-block
@@ -2432,6 +2512,14 @@ def stepThumbFast (s : AGBState) (pc w : UInt32) (hw : UInt16) :
 
 
 
+/-- CPU cycles until the next APU frame-sequencer tick, minus one so a
+    burst that stops here does not move the tick earlier than a
+    per-instruction step would. -/
+def seqRoom (a : AgbApu) : Nat :=
+  let seq0 := if a.seqT == 0 then apuSeqPeriodT else a.seqT
+  let slack := seq0 * 4 - a.cycDebt
+  if slack == 0 then 0 else slack - 1
+
 /-- One CPU step: halt/IRQ/fetch-decode-exec/advance. Fetch latches the
     prefetch word (open-bus source) and pays fetch waitstates; data
     waitstates come from `execMemCostT/A` alongside the CPU base cost.
@@ -2467,5 +2555,79 @@ def stepCPU (s : AGBState) : AGBState :=
     let ins := decodeArm w
     let (s2, c) := execArm s ins
     advance s2 (c + memCost s pc 32 + execMemCostA s ins)
+
+
+/-- RAM, palette/VRAM/OAM, and ROM. IO and SRAM stay on `stepCPU`
+    (registers, DMA, and the backup bus). -/
+def burstMem (a : Nat) : Bool :=
+  (0x02000000 <= a && a < 0x04000000) ||
+  (0x05000000 <= a && a < 0x0E000000)
+
+/-- Thumb ops whose effects commute with a deferred timer/PPU/APU
+    advance: the fast ALU set, plus loads and stores that stay in
+    `burstMem`. -/
+def burstOk (s : AGBState) (ins : ThumbInstr) : Bool :=
+  let r (i : Nat) : Nat := (s.regs.get i).toNat
+  let one (a : Nat) : Bool := burstMem a && burstMem (a + 3)
+  match ins with
+  | .strImm _ rn off | .ldrImm _ rn off | .strbImm _ rn off | .ldrbImm _ rn off
+  | .strhImm _ rn off | .ldrhImm _ rn off => one (r rn + off)
+  | .strReg _ rn rm | .ldrReg _ rn rm | .strbReg _ rn rm | .ldrbReg _ rn rm
+  | .strhReg _ rn rm | .ldrhReg _ rn rm | .ldsbReg _ rn rm | .ldshReg _ rn rm =>
+    one (r rn + r rm)
+  | .strSp _ off | .ldrSp _ off => one (r 13 + off)
+  | .ldrLit _ off =>
+    one (((s.regs.pc.toNat + 4) &&& 0xFFFFFFFC) + off)
+  | .push _ _ =>
+    let sp := r 13
+    sp >= 64 && burstMem (sp - 64) && burstMem (sp - 1)
+  | .pop _ _ =>
+    let sp := r 13
+    burstMem sp && burstMem (sp + 60)
+  | .stm rb _ | .ldm rb _ =>
+    let b := r rb
+    burstMem b && burstMem (b + 60)
+  | .swi _ | .bx _ | .blPre _ | .blSuf _ | .b _ | .bcond _ _ => false
+  | .hiMov _ rd | .hiAdd _ rd => rd != 15
+  | _ => true
+
+/-- Several Thumb ops, then one `advance`. Exact while the batch stays
+    inside `limit` and stops before the next timer overflow, scanline
+    edge, or sequencer tick. IO, SRAM, and mode switches fall through
+    to `stepCPU`. -/
+def stepBurst (s : AGBState) (limit : Nat) : AGBState :=
+  if s.halted then stepHaltJump s
+  else if limit == 0 || irqPending s.irq || !(cpsrT s.regs.cpsr) then stepCPU s
+  else
+    let room := min limit (min (haltJump s) (seqRoom s.apu))
+    if room == 0 then stepCPU s
+    else
+      let commit (st : AGBState) (taken : Nat) (more : Bool) : AGBState :=
+        let s1 := if taken == 0 then st else
+          advanceOnRegs st st.regs st.busVal taken
+        if more then stepCPU s1 else s1
+      let rec go (st : AGBState) (taken : Nat) : Nat → AGBState
+        | 0 => commit st taken false
+        | fuel + 1 =>
+          if taken >= room || irqPending st.irq || !(cpsrT st.regs.cpsr) then
+            commit st taken false
+          else
+            let pc := st.regs.pc
+            let w := memRead32 st (pc &&& 0xFFFFFFFC)
+            let hw := fetchHw w pc
+            match stepThumbFastCore st pc hw with
+            | some (regs1, n) =>
+              if taken + n > room then commit st taken true
+              else go { st with regs := regs1, busVal := w } (taken + n) fuel
+            | none =>
+              let ins := decodeThumb hw
+              let stB := { st with busVal := w }
+              if !burstOk stB ins then commit st taken true
+              else
+                let (st2, c) := execThumb stB ins
+                let n := c + memCost stB pc 16 + execMemCostT stB ins
+                if taken + n > room then commit st taken true
+                else go st2 (taken + n) fuel
+      go s 0 256
 
 end AGB

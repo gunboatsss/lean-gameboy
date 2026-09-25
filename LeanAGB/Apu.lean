@@ -88,8 +88,10 @@ structure AgbApu where
   hpLY : Int := 0
   hpRX : Int := 0
   hpRY : Int := 0
-  lpL : Int := 0
-  lpR : Int := 0
+  /-- 4th-order low-pass memory, two DF1 biquads per side:
+      `[x1, x2, y1, y2]` then the second stage. -/
+  lpL : Array Int := Array.replicate 8 0
+  lpR : Array Int := Array.replicate 8 0
   out : ByteArray := ByteArray.empty
   /-- Fine-grid scratch voices (one Int per sample per side; drained
       through the decimator when `sampleRes ≠ 0`, else unused). -/
@@ -298,24 +300,52 @@ def apuHpR (a : AgbApu) (x : Int) : AgbApu × Int :=
   let y := x - a.hpRX + GB.ApuState.tdiv1024 (a.hpRY * 1023)
   ({ a with hpRX := x, hpRY := y }, y)
 
-/-- Reconstruction low-pass (one-pole, k=3/4 ≈ 7 kHz at 32768 Hz):
-    the analog output stage the digital model lacks. Tames the FIFO
-    zero-order-hold staircase (16 kHz whine) and square/noise edge
-    harshness while leaving musical content intact. -/
-def apuLpL (a : AgbApu) (x : Int) : AgbApu × Int :=
-  let y := a.lpL + (x - a.lpL) * 3 / 4
-  ({ a with lpL := y }, y)
+/-- Fixed-point scale for the reconstruction biquads (Q14). -/
+def lpScale : Int := 16384
 
-/-- Reconstruction low-pass, right side. -/
+/-- Round-to-nearest division, symmetric about zero. -/
+def divRound (v s : Int) : Int :=
+  if 0 ≤ v then (v + s / 2) / s else -(((-v) + s / 2) / s)
+
+/-- One DF1 biquad step. `a1`/`a2` are the denominator coefficients
+    (the recursive terms are subtracted). Returns `(y, x1, x2, y1, y2)`. -/
+def biquadStep (b0 b1 b2 a1 a2 x x1 x2 y1 y2 : Int) : Int × Int × Int × Int × Int :=
+  let acc := b0 * x + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2
+  let y0 := divRound acc lpScale
+  let y := if y0 > 32767 then 32767 else if y0 < -32768 then -32768 else y0
+  (y, x, x1, y, y1)
+
+/-- Reconstruction low-pass: 4th-order Butterworth at 7 kHz
+    (32768 Hz). Flat through 4 kHz, about −36 dB at 12 kHz and
+    below −60 dB from 14 kHz up, so the FIFO zero-order-hold image
+    and the top square/noise harmonics do not reach the host
+    resampler (the old one-pole, k=3/4, was only −4 dB at 16 kHz,
+    which is the buzz). Coefficients are Q14. -/
+def apuLpMem (mem : Array Int) (x : Int) : Array Int × Int :=
+  let (y0, x1, x2, y1, y2) :=
+    biquadStep 4616 9231 4616 (-5409) 7487
+      x (mem.getD 0 0) (mem.getD 1 0) (mem.getD 2 0) (mem.getD 3 0)
+  let (y, x3, x4, y3, y4) :=
+    biquadStep 3335 6670 3335 (-3908) 864
+      y0 (mem.getD 4 0) (mem.getD 5 0) (mem.getD 6 0) (mem.getD 7 0)
+  -- `set!` keeps the 8-cell delay line (no per-sample allocation).
+  let mem := (mem.set! 0 x1).set! 1 x2 |>.set! 2 y1 |>.set! 3 y2
+  let mem := (mem.set! 4 x3).set! 5 x4 |>.set! 6 y3 |>.set! 7 y4
+  (mem, y)
+
+def apuLpL (a : AgbApu) (x : Int) : AgbApu × Int :=
+  let (mem, y) := apuLpMem a.lpL x
+  ({ a with lpL := mem }, y)
+
 def apuLpR (a : AgbApu) (x : Int) : AgbApu × Int :=
-  let y := a.lpR + (x - a.lpR) * 3 / 4
-  ({ a with lpR := y }, y)
+  let (mem, y) := apuLpMem a.lpR x
+  ({ a with lpR := mem }, y)
 
 /-- Emit `k` samples (128 T apart), advancing phases progressively.
     Every sample passes the DC blocker (first-order high-pass, ÷1024
     ≈ 5 Hz at 32768 Hz — the mixer's idle bias would otherwise hold a
     permanent offset and turn bias steps into pops; same pattern as
-    the proven DMG `hpStep`) and the reconstruction low-pass. -/
+    the proven DMG `hpStep`) and the 7 kHz reconstruction low-pass. -/
 def emitK : AgbApu → Nat → AgbApu
   | a, 0 => a
   | a, k + 1 =>
@@ -423,10 +453,17 @@ def decimCascade : Array (Array Int) → Array Int → Nat → Array Int × Arra
     let (fin, hs) := decimCascade (hists.set! 0 h0) outs s
     (fin, hs)
 
-/-- Drain emitted sample bytes (frontend consumes them). At res 0 this
-    is the old path bit-for-bit (plus the 4096 B pre-reservation, which
-    avoids regrowing through ~11 doublings per frame); at res ≠ 0 the
-    fine voices decimate through the FIR into `out`. -/
+/-- One output sample: reconstruction low-pass, then s16LE stereo. -/
+def pushFiltered (a : AgbApu) (b : ByteArray) (l r : Int) : AgbApu × ByteArray :=
+  let (a, l) := apuLpL a l
+  let (a, r) := apuLpR a r
+  (a, pushS16LE (pushS16LE b l) r)
+
+/-- Drain emitted sample bytes (frontend consumes them). At res 0 the
+    samples were already low-passed in `emitK`. At res ≠ 0 the fine
+    voices decimate through the FIR, then the same 7 kHz low-pass
+    runs on the 32768 Hz result — games (Kirby included) leave
+    SOUNDBIAS at 65 kHz, so this is the path that actually plays. -/
 def apuDrain (a : AgbApu) : AgbApu × ByteArray :=
   if sampleRes a == 0 then
     ({ a with out := ByteArray.emptyWithCapacity 4096 }, a.out)
@@ -435,9 +472,10 @@ def apuDrain (a : AgbApu) : AgbApu × ByteArray :=
     let (dl, hl) := decimCascade a.firL a.foutL r
     let (dr, hr) := decimCascade a.firR a.foutR r
     let n := Nat.min dl.size dr.size
-    let out := (List.range n).foldl (fun (b : ByteArray) i =>
-      pushS16LE (pushS16LE b (dl.getD i 0)) (dr.getD i 0))
-      (ByteArray.emptyWithCapacity (4 * n + 16))
+    let (a, out) := (List.range n).foldl (fun (acc : AgbApu × ByteArray) i =>
+      let (a, b) := acc
+      pushFiltered a b (dl.getD i 0) (dr.getD i 0))
+      (a, ByteArray.emptyWithCapacity (4 * n + 16))
     ({ a with out := out, foutL := Array.emptyWithCapacity 1200, foutR := Array.emptyWithCapacity 1200, firL := hl, firR := hr }, out)
 
 /-- Banked wave-RAM read (CPU sees the non-playing bank). -/

@@ -29,7 +29,7 @@ def runFrame (s : AGBState) : AGBState :=
     | st, 0 => st
     | st, k + 1 =>
       if st.cycles >= target then st
-      else loop (if st.halted then stepHaltJump st else stepCPU st) k
+      else loop (stepBurst st (target - st.cycles)) k
   loop s (AGB_CYCLES_PER_FRAME + 1000)
 
 def runFrames : AGBState → Nat → AGBState
@@ -43,7 +43,7 @@ def runUntilCycles (s : AGBState) (cycles : Nat) : AGBState :=
     | st, 0 => st
     | st, k + 1 =>
       if target <= st.cycles then st
-      else loop (if st.halted then stepHaltJump st else stepCPU st) k
+      else loop (stepBurst st (target - st.cycles)) k
   loop s (cycles + 1000)
 
 /-- White fill (forced blank: DISPCNT.7 shows white regardless of

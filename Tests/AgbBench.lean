@@ -150,6 +150,27 @@ def main (args : List String) : IO Unit := do
       let t1 ← IO.monoNanosNow
       IO.println s!"[agb-bench] render: {(t1 - t0)}ns for {20 * o.rounds} iters ({(t1 - t0) / (20 * o.rounds)}ns/iter chk={chk})"
       IO.println s!"[agb-bench] fbcheck: {fbCheck s}"
+    if inOnly o "sprites" then do
+      -- 96 overlapping 32×32 sprites (shape 0, size 2). Same pixels the
+      -- scanline painter must cover when a scene is full of OBJs.
+      let mut oam := s.oam
+      for i in List.range 96 do
+        let y := w16 (i * 3 % 200)
+        let x := w16 (i * 5 % 240)
+        let a1 := x ||| (w16 2 <<< 14)
+        let a2 := w16 ((i * 8) % 512)
+        oam := bset16LE oam (i * 8) y
+        oam := bset16LE oam (i * 8 + 2) a1
+        oam := bset16LE oam (i * 8 + 4) a2
+      let sd := { s with oam := oam, ppu := { s.ppu with dispcnt := (s.ppu.dispcnt &&& 0xFF78) ||| 0x1000 } }
+      let t0 ← IO.monoNanosNow
+      let mut chk := 0
+      let mut st := sd
+      for _ in List.range (8 * o.rounds) do
+        let s2 := renderFrame st
+        st := s2; chk := chk + (s2.fb.getD 100 0).toNat
+      let t1 ← IO.monoNanosNow
+      IO.println s!"[agb-bench] sprites: {(t1 - t0)}ns for {8 * o.rounds} iters ({(t1 - t0) / (8 * o.rounds)}ns/iter chk={chk})"
     if inOnly o "memo" then do
       let t0 ← IO.monoNanosNow
       let mut m : RenderMemo := {}

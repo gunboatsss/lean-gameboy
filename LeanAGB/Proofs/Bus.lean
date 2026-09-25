@@ -246,6 +246,37 @@ theorem memWrite8IO_rom (s : AGBState) (a : Nat) (v : UInt8) :
   simp only []
   repeat (first | simp [syncIo16_rom, apuFifoPush_rom] | split | rfl)
 
+theorem withEwram_cycles (s : AGBState) (f : ByteArray → ByteArray) :
+    (withEwram s f).cycles = s.cycles := by unfold withEwram; rfl
+theorem withIwram_cycles (s : AGBState) (f : ByteArray → ByteArray) :
+    (withIwram s f).cycles = s.cycles := by unfold withIwram; rfl
+theorem withPal_cycles (s : AGBState) (f : ByteArray → ByteArray) :
+    (withPal s f).cycles = s.cycles := by unfold withPal; rfl
+theorem withVram_cycles (s : AGBState) (f : ByteArray → ByteArray) :
+    (withVram s f).cycles = s.cycles := by unfold withVram; rfl
+theorem withOam_cycles (s : AGBState) (f : ByteArray → ByteArray) :
+    (withOam s f).cycles = s.cycles := by unfold withOam; rfl
+theorem withEwram_regs (s : AGBState) (f : ByteArray → ByteArray) :
+    (withEwram s f).regs = s.regs := by unfold withEwram; rfl
+theorem withIwram_regs (s : AGBState) (f : ByteArray → ByteArray) :
+    (withIwram s f).regs = s.regs := by unfold withIwram; rfl
+theorem withPal_regs (s : AGBState) (f : ByteArray → ByteArray) :
+    (withPal s f).regs = s.regs := by unfold withPal; rfl
+theorem withVram_regs (s : AGBState) (f : ByteArray → ByteArray) :
+    (withVram s f).regs = s.regs := by unfold withVram; rfl
+theorem withOam_regs (s : AGBState) (f : ByteArray → ByteArray) :
+    (withOam s f).regs = s.regs := by unfold withOam; rfl
+theorem withEwram_rom (s : AGBState) (f : ByteArray → ByteArray) :
+    (withEwram s f).rom = s.rom := by unfold withEwram; rfl
+theorem withIwram_rom (s : AGBState) (f : ByteArray → ByteArray) :
+    (withIwram s f).rom = s.rom := by unfold withIwram; rfl
+theorem withPal_rom (s : AGBState) (f : ByteArray → ByteArray) :
+    (withPal s f).rom = s.rom := by unfold withPal; rfl
+theorem withVram_rom (s : AGBState) (f : ByteArray → ByteArray) :
+    (withVram s f).rom = s.rom := by unfold withVram; rfl
+theorem withOam_rom (s : AGBState) (f : ByteArray → ByteArray) :
+    (withOam s f).rom = s.rom := by unfold withOam; rfl
+
 theorem memWrite8Nat_cycles (s : AGBState) (a : Nat) (v : UInt8) :
     (memWrite8Nat s a v).cycles = s.cycles := by
   unfold memWrite8Nat
@@ -424,21 +455,21 @@ theorem dmaBulk_some_cycles (s s' : AGBState) (src dst : UInt32) (total : Nat)
   unfold dmaBulk at h
   split at h
   all_goals (first | simp at h | skip)
-  all_goals (first | (obtain ⟨_, h2⟩ := h; subst h2; rfl) | (subst h; rfl))
+  all_goals (first | (obtain ⟨_, h2⟩ := h; subst h2; simp [withEwram_cycles, withIwram_cycles, withPal_cycles, withVram_cycles, withOam_cycles]) | (subst h; simp [withEwram_cycles, withIwram_cycles, withPal_cycles, withVram_cycles, withOam_cycles]))
 
 theorem dmaBulk_some_regs (s s' : AGBState) (src dst : UInt32) (total : Nat)
     (h : dmaBulk s src dst total = some s') : s'.regs = s.regs := by
   unfold dmaBulk at h
   split at h
   all_goals (first | simp at h | skip)
-  all_goals (first | (obtain ⟨_, h2⟩ := h; subst h2; rfl) | (subst h; rfl))
+  all_goals (first | (obtain ⟨_, h2⟩ := h; subst h2; simp [withEwram_regs, withIwram_regs, withPal_regs, withVram_regs, withOam_regs]) | (subst h; simp [withEwram_regs, withIwram_regs, withPal_regs, withVram_regs, withOam_regs]))
 
 theorem dmaBulk_some_rom (s s' : AGBState) (src dst : UInt32) (total : Nat)
     (h : dmaBulk s src dst total = some s') : s'.rom = s.rom := by
   unfold dmaBulk at h
   split at h
   all_goals (first | simp at h | skip)
-  all_goals (first | (obtain ⟨_, h2⟩ := h; subst h2; rfl) | (subst h; rfl))
+  all_goals (first | (obtain ⟨_, h2⟩ := h; subst h2; simp [withEwram_rom, withIwram_rom, withPal_rom, withVram_rom, withOam_rom]) | (subst h; simp [withEwram_rom, withIwram_rom, withPal_rom, withVram_rom, withOam_rom]))
 
 theorem dmaRun_cycles (s : AGBState) (src dst : UInt32) (count : Nat) (is32 : Bool)
     (sstep dstep : Int) (unit : Nat) :
@@ -716,12 +747,26 @@ theorem memWrite16_rom (s : AGBState) (addr : UInt32) (v : UInt16) :
 theorem memWrite32_cycles (s : AGBState) (addr : UInt32) (v : UInt32) :
     (memWrite32 s addr v).cycles = s.cycles := by
   unfold memWrite32
-  rw [memWrite16_cycles, memWrite16_cycles]
+  simp only []
+  split
+  · rfl
+  · split
+    · rfl
+    · split
+      · rfl
+      · rw [memWrite16_cycles, memWrite16_cycles]
 
 theorem memWrite32_regs (s : AGBState) (addr : UInt32) (v : UInt32) :
     (memWrite32 s addr v).regs = s.regs := by
   unfold memWrite32
-  rw [memWrite16_regs, memWrite16_regs]
+  simp only []
+  split
+  · rfl
+  · split
+    · rfl
+    · split
+      · rfl
+      · rw [memWrite16_regs, memWrite16_regs]
 
 -- ── IRQ register semantics ──
 

@@ -198,6 +198,39 @@ def runFramesInput : AGBState → Nat → Nat → Array (Nat × Nat × Nat) →
 def audioLowMark : Nat := 6000
 def audioHighMark : Nat := 20000
 
+def s16leAt (b : ByteArray) (o : Nat) : Int :=
+  let u := (bget b o).toNat + (bget b (o + 1)).toNat * 256
+  if u >= 32768 then (u : Int) - 65536 else u
+
+/-- Stretch stereo s16 so it lasts `elapsedMs` instead of its native
+    32768 Hz duration. A frame costs ~25 ms here and only carries
+    ~17 ms of audio; played back raw, the device underruns and the
+    silence between chunks is a frame-rate buzz. Linear stretch fills
+    that gap. No stretch when the frame was on time, and never more
+    than 2× (a hitch must not turn one chunk into a drone). -/
+def stretchIfSlow (src : ByteArray) (elapsedMs : Nat) : ByteArray :=
+  let n := src.size / 4
+  let nativeMs := n * 1000 / 32768
+  if n < 2 || nativeMs == 0 || elapsedMs <= nativeMs + 1 then src
+  else
+    let elapsed := min elapsedMs (nativeMs * 2)
+    let m := n * elapsed / nativeMs
+    if m <= n then src
+    else
+      let rec go : Nat → ByteArray → ByteArray
+        | 0, acc => acc
+        | k + 1, acc =>
+          let i := m - (k + 1)
+          let den := m - 1
+          let idx := i * (n - 1) / den
+          let frac := i * (n - 1) % den
+          let i1 := min (idx + 1) (n - 1)
+          let lerp (a b : Int) : Int := a + (b - a) * (frac : Int) / (den : Int)
+          let l := lerp (s16leAt src (idx * 4)) (s16leAt src (i1 * 4))
+          let r := lerp (s16leAt src (idx * 4 + 2)) (s16leAt src (i1 * 4 + 2))
+          go k (pushS16LE (pushS16LE acc l) r)
+      go m (ByteArray.emptyWithCapacity (m * 4 + 16))
+
 /-- Windowed run: one emulated frame per host frame, throttled.
     F1 (edge-triggered) writes `snapN.ppm` framebuffer dumps.
     Video is best-effort: frames past their deadline skip presenting
@@ -212,6 +245,7 @@ partial def agbWindowLoop (s : AGBState) (m : RenderMemo) (nextDue frac : Nat)
   let mask ← poll
   if mask / 256 % 2 == 1 then pure s  -- quit requested
   else
+    let t0 ← ticksMs
     let f1 := (mask / 512 % 2).toNat
     let snaps ←
       if f1 == 1 && prevF1 == 0 then do
@@ -231,7 +265,9 @@ partial def agbWindowLoop (s : AGBState) (m : RenderMemo) (nextDue frac : Nat)
         let (s, m) ← presentAgbFrame s m
         pure (s, m, 0)
     let (apu, abuf) := apuDrain s.apu
-    audioPush abuf
+    let pushed ← ticksMs
+    let elapsed := (pushed - t0).toNat
+    audioPush (stretchIfSlow abuf elapsed)
     let s := { s with apu := apu }
     let (due, frac) := nextDeadline nextDue frac
     let q ← audioQueued
