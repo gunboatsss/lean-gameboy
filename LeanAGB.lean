@@ -19,6 +19,9 @@ import LeanAGB.Proofs.Regs
 import LeanAGB.Proofs.Decode
 import LeanAGB.Proofs.Alu
 import LeanAGB.Proofs.Bus
+import LeanAGB.Proofs.Mem
+import LeanAGB.Proofs.Dma
+import LeanAGB.Proofs.Irq
 import LeanAGB.Proofs.Apu
 import LeanAGB.Proofs.Timer
 import LeanAGB.Proofs.Exec

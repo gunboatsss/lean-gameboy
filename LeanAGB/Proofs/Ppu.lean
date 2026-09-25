@@ -237,10 +237,10 @@ theorem mode0LineLoop_size (ppu : AgbPpu) (palT : Array UInt32)
   | zero => rfl
   | succ k ih => simp [mode0LineLoop, ih, agbPlot_size]
 
-theorem mode0LineLoopCfg_size (bc : BlendCfg) (ppu : AgbPpu)
-    (palT : Array UInt32) (vram : ByteArray) (sps : List AgbSprite)
-    (spans : Array BgSpan) (y : Nat) (fb : Array UInt32) (k : Nat) :
-    (mode0LineLoopCfg bc ppu palT vram sps spans y fb k).size = fb.size := by
+theorem mode0LineLoopCfg_size (bc : BlendCfg) (palT : Array UInt32)
+    (vram : ByteArray) (objs : Array (Option Cand)) (spans : Array BgSpan)
+    (y : Nat) (fb : Array UInt32) (k : Nat) :
+    (mode0LineLoopCfg bc palT vram objs spans y fb k).size = fb.size := by
   induction k generalizing fb with
   | zero => rfl
   | succ k ih => simp [mode0LineLoopCfg, ih, agbPlot_size]
@@ -250,7 +250,7 @@ theorem mode0BlitLine_size (ppu : AgbPpu) (palT : Array UInt32)
     (fb : Array UInt32) (k : Nat) :
     (mode0BlitLine ppu palT vram parsed y fb k).size = fb.size := by
   unfold mode0BlitLine
-  exact mode0LineLoopCfg_size _ _ _ _ _ _ _ _ k
+  exact mode0LineLoopCfg_size _ _ _ _ _ _ _ k
 
 theorem renderMode0_size (ppu : AgbPpu) (pal vram oam : ByteArray)
     (fb : Array UInt32) (j : Nat) :
@@ -415,5 +415,58 @@ theorem memoRenderFrame_miss (s : AGBState) (m : RenderMemo)
       ∧ (memoRenderFrame s m).2.valid = true := by
   unfold memoRenderFrame
   simp [hv]
+
+/-! ## Unimplemented modes 1/2: documented no-ops -/
+
+/-- Mode 1 keeps the previous framebuffer. -/
+theorem renderFrame_mode1 (s : AGBState)
+    (hblank : ((s.ppu.dispcnt.toNat >>> 7) &&& 1) = 0)
+    (hmode : (s.ppu.dispcnt.toNat &&& 7) = 1) :
+    (renderFrame s).fb = s.fb := by
+  simp [renderFrame, hblank, hmode]
+
+/-- Mode 2 keeps the previous framebuffer. -/
+theorem renderFrame_mode2 (s : AGBState)
+    (hblank : ((s.ppu.dispcnt.toNat >>> 7) &&& 1) = 0)
+    (hmode : (s.ppu.dispcnt.toNat &&& 7) = 2) :
+    (renderFrame s).fb = s.fb := by
+  simp [renderFrame, hblank, hmode]
+
+/-- Forced blank fills white. -/
+theorem renderFrame_blank (s : AGBState)
+    (hblank : ((s.ppu.dispcnt.toNat >>> 7) &&& 1) = 1) :
+    (renderFrame s).fb = renderBlank s.fb := by
+  simp [renderFrame, hblank]
+
+/-- Rendering never touches PPU registers. -/
+theorem renderFrame_ppu (s : AGBState) : (renderFrame s).ppu = s.ppu := by
+  unfold renderFrame
+  split
+  · rfl
+  · split
+    · rfl
+    · split
+      · rfl
+      · split
+        · rfl
+        · split
+          · rfl
+          · rfl
+
+/-! ## Blank-fill sizing -/
+
+/-- Plotting preserves the framebuffer size over any index list. -/
+theorem foldPlot_size (l : List Nat) (fb : Array UInt32) (c : UInt32) :
+    ((l.foldl (fun acc i => agbPlot acc (i % agbWidth) (i / agbWidth) c) fb).size
+      = fb.size) := by
+  induction l generalizing fb with
+  | nil => rfl
+  | cons _ t ih =>
+    simp only [List.foldl_cons, ih, agbPlot_size]
+
+/-- Blank fill preserves the framebuffer size. -/
+theorem renderBlank_size (fb : Array UInt32) :
+    (renderBlank fb).size = fb.size :=
+  foldPlot_size _ _ _
 
 end AGB

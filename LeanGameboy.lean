@@ -21,6 +21,13 @@ import LeanGameboy.Proofs.Arith
 import LeanGameboy.Proofs.Regs
 import LeanGameboy.Proofs.Decode
 import LeanGameboy.Proofs.Bus
+import LeanGameboy.Proofs.Cgb
+import LeanGameboy.Proofs.Mbc
+import LeanGameboy.Proofs.Joypad
+import LeanGameboy.Proofs.Framebuffer
+import LeanGameboy.Proofs.Serial
+import LeanGameboy.Proofs.Interrupts
+import LeanGameboy.Proofs.Exec
 import LeanGameboy.Proofs.Timer
 import LeanGameboy.Proofs.Ppu
 import LeanGameboy.Proofs.Apu

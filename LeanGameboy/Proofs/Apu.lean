@@ -9,7 +9,11 @@
   NOTE: `NoiseCh.advance` stepping loops through its LFSR, so its
   bulk loop lives in `Apu.noiseStepLoop` (hoisted from a `let rec` for
   induction) with composition (`noiseStepLoop_add`), timer positivity,
-  and channel additivity below. -/
+  and channel additivity below.
+
+  The second half pins the voice/mixer layer: duty tables, periods,
+  DAC gating, length expiry, envelope hold, mixer silence, and the
+  sample-clock constants. -/
 import LeanGameboy.Apu
 
 namespace GB
@@ -293,5 +297,124 @@ theorem noise_advance_additive (c : NoiseCh) (a b : Nat) :
     simp only [houter, ite_false]
     simp only [NoiseCh.noisePeriod]
     refine ⟨?_, ?_⟩ <;> rw [noiseStepLoop_add] <;> rfl
+
+/-! ## Duty tables -/
+
+/-- Duty patterns are single bits. -/
+theorem dutyPat_lt (d i : Nat) : dutyPat d i < 2 := by
+  unfold dutyPat
+  split
+  all_goals omega
+
+theorem dutyPat_12p5 : dutyPat 0 7 = 1 ∧ dutyPat 0 0 = 0 := by decide
+
+theorem dutyPat_50 : dutyPat 2 0 = 1 ∧ dutyPat 2 1 = 0 ∧ dutyPat 2 5 = 1 := by
+  decide
+
+/-! ## Periods -/
+
+/-- Lowest frequency: longest period. -/
+theorem pulsePeriod_lo : PulseCh.period { freq := 0 } = 8192 := by decide
+
+/-- Highest frequency: shortest period. -/
+theorem pulsePeriod_hi : PulseCh.period { freq := 2047 } = 4 := by decide
+
+/-- Periods are always positive (no silent divide-by-zero downstream). -/
+theorem pulsePeriod_pos (c : PulseCh) : 0 < PulseCh.period c := by
+  have hmod : c.freq % 2048 < 2048 := by omega
+  unfold PulseCh.period
+  omega
+
+theorem wavePeriod_lo : WaveCh.period { freq := 0 } = 4096 := by decide
+
+/-! ## DAC gating -/
+
+/-- Disabled pulse channel is silent. -/
+theorem pulseOut_disabled (c : PulseCh) (h : c.enable = false) :
+    PulseCh.output c = 0 := by
+  simp [PulseCh.output, h]
+
+/-- Pulse with DAC off is silent. -/
+theorem pulseOut_dacOff (c : PulseCh) (h : c.dac = false) :
+    PulseCh.output c = 0 := by
+  simp [PulseCh.output, h]
+
+/-- Full-volume 50% pulse at phase 0 outputs 15. -/
+theorem pulseOut_full :
+    PulseCh.output { enable := true, dac := true, duty := 2, phase := 0, vol := 15 } = 15 := by
+  decide
+
+/-- Disabled wave channel is silent. -/
+theorem waveOut_disabled (c : WaveCh) (h : c.enable = false) :
+    WaveCh.output c = 0 := by
+  simp [WaveCh.output, h]
+
+/-- Volume code 0 mutes the wave channel. -/
+theorem waveOut_vol0 (c : WaveCh) (hen : c.enable = true)
+    (hdac : c.dac = true) (hv : c.volCode = 0) :
+    WaveCh.output c = 0 := by
+  simp [WaveCh.output, hen, hdac, hv]
+
+/-- Disabled noise channel is silent. -/
+theorem noiseOut_disabled (c : NoiseCh) (h : c.enable = false) :
+    NoiseCh.output c = 0 := by
+  simp [NoiseCh.output, h]
+
+/-- Noise with a set output bit is silent. -/
+theorem noiseOut_bitSet (c : NoiseCh) (hen : c.enable = true)
+    (hdac : c.dac = true) (hodd : c.lfsr % 2 = 1) :
+    NoiseCh.output c = 0 := by
+  simp [NoiseCh.output, hen, hdac, hodd]
+
+/-! ## Length + envelope -/
+
+/-- Length expiry disables the pulse channel. -/
+theorem pulseLen_expires :
+    (({ len := 1, lenEnable := true, enable := true } : PulseCh)).lenTick.enable
+      = false := by
+  decide
+
+/-- Length expiry clears the counter. -/
+theorem pulseLen_zeroes :
+    (({ len := 1, lenEnable := true, enable := true } : PulseCh)).lenTick.len
+      = 0 := by
+  decide
+
+/-- Length disabled: length ticks preserve volume. -/
+theorem pulseLen_holdVol (c : PulseCh) (h : c.lenEnable = false) :
+    (c.lenTick).vol = c.vol := by
+  simp [PulseCh.lenTick, h]
+
+/-- Envelope with period 0 holds volume. -/
+theorem pulseEnv_holdVol (c : PulseCh) (h : c.envPeriod = 0) :
+    (c.envTick).vol = c.vol := by
+  simp [PulseCh.envTick, h]
+
+/-- Noise envelope with period 0 holds volume. -/
+theorem noiseEnv_holdVol (c : NoiseCh) (h : c.envPeriod = 0) :
+    (c.envTick).vol = c.vol := by
+  simp [NoiseCh.envTick, h]
+
+/-! ## Mixer -/
+
+/-- Unpowered mixer is silent. -/
+theorem mix_unpowered (s : ApuState) (h : s.powered = false) :
+    ApuState.mix s = 0 := by
+  simp [ApuState.mix, h]
+
+/-- Silence bias at zero master volume. -/
+theorem silence_zeroVol : (({ nr50 := 0 } : ApuState)).silence = -3840 := by
+  decide
+
+/-- Fresh APU is all-quiet. -/
+theorem allQuiet_fresh : (({} : ApuState)).allQuiet = true := by decide
+
+/-! ## Sample-clock constants -/
+
+theorem sampleBase_is95 : ApuState.sampleBase = 95 := rfl
+
+theorem sampleErrStep_is4804 : ApuState.sampleErrStep = 4804 := rfl
+
+theorem sampleErrMax_is44100 : ApuState.sampleErrMax = 44100 := rfl
 
 end GB

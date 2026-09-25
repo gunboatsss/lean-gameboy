@@ -90,4 +90,90 @@ theorem noiseAdvance_off :
       = (GB.NoiseCh.advance { noiseT0 with enable := false } 100).lfsr := by
   decide
 
+/-! ## Wave voice -/
+
+/-- Slowest wave rate. -/
+theorem wavePeriodT_lo : wavePeriodT 0 = 4096 := by decide
+
+/-- Fastest wave rate. -/
+theorem wavePeriodT_hi : wavePeriodT 2047 = 2 := by decide
+
+/-- Wave periods are always positive. -/
+theorem wavePeriodT_pos (freq : Nat) : 0 < wavePeriodT freq := by
+  have hmod : freq % 2048 < 2048 := by omega
+  unfold wavePeriodT
+  omega
+
+/-- Disabled wave voice is silent. -/
+theorem waveOutput_disabled (a : AgbApu) (h : a.ch3.enable = false) :
+    waveOutput a = 0 := by
+  simp [waveOutput, h]
+
+/-- Wave voice with DAC off is silent. -/
+theorem waveOutput_dacOff (a : AgbApu) (h : a.ch3.dac = false) :
+    waveOutput a = 0 := by
+  simp [waveOutput, h]
+
+/-- Nibble extraction is MSB-first. -/
+theorem waveDigit_hi :
+    waveDigit { waveBank := 0, waveDim := false, waveRam := #[0xAB] } 0 = 0xA := by
+  decide
+
+theorem waveDigit_lo :
+    waveDigit { waveBank := 0, waveDim := false, waveRam := #[0xAB] } 1 = 0xB := by
+  decide
+
+/-- Zero time advance is the identity. -/
+theorem waveAdvance_zero (a : AgbApu) : waveAdvance a 0 = a := by
+  simp [waveAdvance]
+
+/-- Playing-bank mirror loads the DMG window. -/
+theorem syncWaveBank_load :
+    (syncWaveBank { waveBank := 0, waveRam := #[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16] }).ch3.wave = Array.mk [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16] := by
+  decide
+
+/-! ## Noise voice -/
+
+/-- One LFSR clock on the reset state. -/
+theorem noiseClock_reset : noiseClock 0x7FFF false = 0x3FFF := by decide
+
+/-- Zero clocks is the identity. -/
+theorem noiseClocks_zero (lfsr : Nat) (width : Bool) :
+    noiseClocks 0 lfsr width = lfsr := rfl
+
+/-! ## Trigger + sequencer plumbing -/
+
+/-- Triggering follows DAC for enable. -/
+theorem pulseTrigger_enable (c : GB.PulseCh) (isCh1 : Bool) :
+    (pulseTrigger c isCh1).enable = c.dac := by
+  cases hlen : c.len == 0 <;> cases hb : isCh1 <;> simp [pulseTrigger, hlen]
+
+/-- Triggering reloads volume from the envelope start. -/
+theorem pulseTrigger_vol (c : GB.PulseCh) (isCh1 : Bool) :
+    (pulseTrigger c isCh1).vol = c.initVol := by
+  cases hlen : c.len == 0 <;> cases hb : isCh1 <;> simp [pulseTrigger, hlen]
+
+/-- No pending phase time: flush is the identity. -/
+theorem apuFlush_idle (a : AgbApu) (h : a.phaseDebt = 0) :
+    apuFlush a = a := by
+  simp [apuFlush, h]
+
+/-! ## Mixer + status -/
+
+/-- Empty FIFOs mix silence. -/
+theorem fifoMix_empty : fifoMix {} = (0, 0) := by decide
+
+/-- Status with everything off reads the fixed bits. -/
+theorem apuStatus_idle : apuStatus {} = 0x70 := by decide
+
+/-- Status with everything on reads all ones. -/
+theorem apuStatus_full :
+    apuStatus { cntX := 0x80, ch1 := { enable := true }, ch2 := { enable := true }, ch3 := { enable := true }, ch4 := { enable := true } } = 0xFF := by
+  decide
+
+/-- Banked wave-RAM roundtrip at offset 0. -/
+theorem apuWave_rw :
+    apuWaveRead (apuWaveWrite { waveBank := 0, waveRam := Array.replicate 32 0 } 0 0xAB) 0 = 0xAB := by
+  decide
+
 end AGB

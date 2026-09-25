@@ -1561,4 +1561,52 @@ theorem exec_halt_freezes_pc :
     ((runInstrs ((hleSwi (loadROM execROM) SWI_HALT).1) 4).regs.pc) = 0x08000000 := by
   decide
 
+/-! ## HLE copy workers: refusal, dispatch, and data correctness -/
+
+/-- BIOS-area sources are refused. -/
+theorem hleSwiCpuSet_bios (s : AGBState)
+    (h : (s.regs.get 0).toNat < 0x4000) :
+    hleSwiCpuSet s = s := by
+  unfold hleSwiCpuSet
+  simp [h]
+
+/-- BIOS-area sources are refused (fast path too). -/
+theorem hleSwiCpuFastSet_bios (s : AGBState)
+    (h : (s.regs.get 0).toNat < 0x4000) :
+    hleSwiCpuFastSet s = s := by
+  unfold hleSwiCpuFastSet
+  simp [h]
+
+/-- Dispatch routes `CpuSet` to its worker. -/
+theorem hleSwiCopy_cpuset (s : AGBState) :
+    (hleSwiCopy s SWI_CPUSET).1 = hleSwiCpuSet s ∧
+    (hleSwiCopy s SWI_CPUSET).2 = false := by
+  simp [hleSwiCopy, SWI_CPUSET]
+
+/-- Unknown SWI numbers fall through to a real exception. -/
+theorem hleSwiDecomp_unknown (s : AGBState) :
+    hleSwiDecomp s 0xFF = (s, true) := by
+  simp [hleSwiDecomp, SWI_BITUNPACK, SWI_LZ77WRAM, SWI_LZ77VRAM, SWI_HUFF,
+    SWI_RLWRAM, SWI_RLVRAM, SWI_DIFF8W, SWI_DIFF8V, SWI_DIFF16]
+
+/-- Copy test state: 8-byte EWRAM window, blank framebuffer. -/
+def hleCopyTest (r0 r1 r2 : UInt32) : AGBState :=
+  { ({} : AGBState) with
+    regs := { r := #[r0, r1, r2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+              cpsr := 0x3F },
+    ewram := ByteArray.mk #[0xAA, 0xBB, 0xCC, 0xDD, 0, 0, 0, 0],
+    fb := #[] }
+
+/-- `CpuSet` copies two halfwords EWRAM→EWRAM (bulk path). -/
+theorem hleSwiCpuSet_copies :
+    (hleSwiCpuSet (hleCopyTest 0x02000000 0x02000004 2)).ewram
+      = ByteArray.mk #[0xAA, 0xBB, 0xCC, 0xDD, 0xAA, 0xBB, 0xCC, 0xDD] := by
+  decide
+
+/-- `CpuSet` fill mode broadcasts the source halfword. -/
+theorem hleSwiCpuSet_fill :
+    (hleSwiCpuSet (hleCopyTest 0x02000000 0x02000004 0x01000002)).ewram
+      = ByteArray.mk #[0xAA, 0xBB, 0xCC, 0xDD, 0xAA, 0xBB, 0xAA, 0xBB] := by
+  decide
+
 end AGB

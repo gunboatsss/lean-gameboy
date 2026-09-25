@@ -64,8 +64,16 @@ commutativity and `Nat`-level characterization (`Arith`), exact AF
 codec bit positions (`Regs`), full invalid-opcode set + exhaustive
 length/coverage over all 512 opcodes (`Decode`), 12 memory-map
 non-interference lemmas + exact cycle accounting + HDMA/scanline
-cycle preservation (`Bus`), timer edge
-cases + IRQ acknowledgement (`Timer`), PPU modes, palette bounds,
+cycle preservation (`Bus`), CGB WRAM/VRAM bank isolation, palette
+auto-increment + BGR555 color pins, HDMA length/status (`Cgb`), header codec tables,
+parse→banking wiring, MBC1/MBC3 bank guards + external-RAM roundtrip
+(`Mbc`), P1 matrix mapping + `0xFF00` bus roundtrip (`Joypad`),
+DMG palette + exact PPM dump sizing (`Framebuffer`), serial transfer
+dynamics + IRQ ack (`Serial`), interrupt priority dispatch + vectors
+(`Interrupts`), SM83 execution vectors (`Exec`), timer frequency/overflow/DIV behavior
++ edge cases + IRQ acknowledgement (`Timer`), PPU fetch/mode/attribute
+pins + LCD-off step behavior (`Ppu`), APU duty/mixer/envelope pins
+(`Apu`), palette bounds,
 interrupt priority (`Ppu`), APU phase-step frame preservation (`Apu`),
 halt-bug spin/arming/immediates (`Halt`),
 sprite attribute decoding (`Sprite`), per-instruction cycle lower
@@ -154,8 +162,18 @@ recorded with `SkipBios = false`):
 - `LeanGameboy/Bus.lean` — memory map, CPU executor, IRQ dispatch
 - `LeanGameboy/Emu.lean` — frame stepping, PPM dumps, `.sav`
 - `LeanGameboy/Sdl/{Ffi,Driver}.lean` + `c/shim.c` — SDL frontend
-- `LeanGameboy/Proofs/{Arith,Regs,Decode,Bus,Timer,Ppu,Apu,Halt,Sprite,Reach}.lean`
+- `LeanGameboy/Proofs/{Arith,Regs,Decode,Bus,Cgb,Mbc,Joypad,Framebuffer,Serial,Interrupts,Exec,Timer,Ppu,Apu,Halt,Sprite,Reach,Spec,Stack}.lean`
   — machine-checked proof suite (see below)
+- `LeanAGB/Proofs/{Basic,Regs,Decode,Alu,Bus,Mem,Dma,Apu,Timer,Exec,Ppu,Spec,Mode,Save,Keypad,Irq}.lean`
+  — GBA proof suite, same gate (zero `sorry`/`axiom`): bit helpers,
+  CPSR codec, Thumb/ARM decode sweeps, ALU flag contracts, memory-map
+  non-interference, per-region read/write roundtrips (`Mem`), DMA
+  overlap/copy correctness (`Dma`), FIFO/mixer/voice pins (`Apu`),
+  timer control, per-instruction costs + HLE copy correctness (`Exec`),
+  scanline geometry + unimplemented-mode no-ops (`Ppu`), execution
+  vectors (`Spec`), exception entry/roundtrips (`Mode`), backup-media
+  codec + Flash/EEPROM machines (`Save`), keypad mapping (`Keypad`),
+  IRQ gating + entry/exit vectors (`Irq`)
 - `Tests/Smoke.lean` (`gb-test`) — end-to-end smoke suite
 - `Main.lean` — CLI
 
